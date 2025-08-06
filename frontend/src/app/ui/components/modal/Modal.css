@@ -1,0 +1,81 @@
+/* .modal {
+    max-width: 20rem;
+    padding: 2rem;
+    border: 0;
+    border-radius: 0.5rem;
+    position: relative;
+    box-shadow: hsl(0 0% 0% / 10%) 0 0 0.5rem 0.25rem;
+  }
+  
+  .modal::backdrop {
+    background: hsl(0 0% 0% / 50%);
+  }
+  
+  .modal-close-btn {
+    font-size: 0.75em;
+    position: absolute;
+    top: 0.25em;
+    right: 0.25em;
+  } */
+
+/* Center the dialog and style the backdrop */
+.modal {
+  width: 90%;
+  max-width: 800px;
+  max-height: 90vh;
+  border: none;
+  border-radius: 8px;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 5px 20px rgba(0, 0, 0, 0.3);
+
+  /* Centering Fix */
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+}
+
+/* .modal-dialog{
+  padding: '20px';
+  border: 'none';
+  border-radius: '8px';
+  box-shadow: '0 2px 10px rgba(0,0,0,0.3)';
+  width: 'auto';
+  max-width: '90%';
+  z-index: 9999;
+} */
+
+/* Default backdrop styling for <dialog> */
+.modal::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+/* Header section */
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #ddd;
+  background-color: #f8f8f8;
+}
+
+/* Close button */
+.modal-close-btn {
+  background: none;
+  border: none;
+  font-size: 14px;
+  cursor: pointer;
+  color: #333;
+}
+
+/* Scrollable content area */
+.modal-content {
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1;
+}

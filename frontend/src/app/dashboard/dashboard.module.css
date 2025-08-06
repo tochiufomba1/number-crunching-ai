@@ -1,0 +1,39 @@
+.one{
+    background-color: red;
+}
+
+.layoutContainer{
+    display: flex;
+    height: 100vh; /* Full viewport height */
+    flex-direction: column;
+}
+
+.sidenavContainer{
+    width: 100%;
+    flex: none;
+    background-color: #F9FAFB; 
+}
+
+.childrenContainer{
+    flex-grow: 1;
+    padding: 1.5rem;
+    background-color: #e0dfea;
+    display: flex;
+    flex-direction: column;
+}
+
+@media (min-width: 768px) { /* Tailwind's 'md' breakpoint is usually 768px */
+    .layoutContainer {
+      flex-direction: row;
+      overflow: hidden;
+    }
+
+    .sidenavContainer{
+        width: 16rem;
+    }
+
+    .childrenContainer{
+        overflow-y: auto;
+        /* padding: 3rem; */
+    }
+}

@@ -1,0 +1,57 @@
+.body {
+    display: flex;
+    justify-content: center;
+}
+
+.card {
+    display: flex;
+    flex-direction: column;
+    border-radius: 25px;
+    background-color: blue;
+    gap: 2px;
+    width: 400px;
+    height: 400px;
+    margin: 1em 2em;
+}
+
+.card h1 {
+    align-self: center;
+}
+
+.container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    max-width: 900px;
+    padding: 30px;
+}
+
+.loginCard {
+    display: flex;
+    flex-direction: row;
+    width: 100%;
+    background-color: rgba(2, 0, 36, 1);
+    border-radius: 10px;
+    box-shadow: 0px 0px 20px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+}
+
+.form {
+    width: 55%;
+    padding: 50px 72px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    background: linear-gradient(90deg, rgba(2, 0, 36, 1) 0%, rgba(9, 9, 121, 1) 35%, rgba(0, 212, 255, 1) 100%);
+    gap: 40px;
+    border-radius: 10px;
+
+}
+
+/* h1{
+    font-family: 'Lucida Sans', 'Lucida Sans Regular', 'Lucida Grande', 'Lucida Sans Unicode', Geneva, Verdana, sans-serif;
+    color: aliceblue;
+    font-size: 24px;
+    text-align: center;
+  } */
