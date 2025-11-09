@@ -1,0 +1,9 @@
+.env*
+.venv
+__pycache__
+aws*
+new_backend/awscliv2.zip
+new_backend/s.txt
+.next
+node_modules
+s.txt
