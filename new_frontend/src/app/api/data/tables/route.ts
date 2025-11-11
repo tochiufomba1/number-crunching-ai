@@ -7,7 +7,7 @@ export async function GET(){
         throw new Error("Not signed in")
     }
 
-    const req = await fetch(`${process.env.EXTERNAL_API}/api/users/tables`,
+    const res = await fetch(`${process.env.EXTERNAL_API}/api/users/tables`,
         {
             headers: {
                 "Accept": 'application/json',
@@ -16,8 +16,5 @@ export async function GET(){
         }
     )
 
-    const res = await req.json();
-    // console.log(res)
-
-    return Response.json(res)
+    return res
 }

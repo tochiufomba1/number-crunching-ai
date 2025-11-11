@@ -161,8 +161,8 @@ def send_table_data(
 ):
     access_token = user["access_token"]
     session_data = redis_client.hgetall(f'user-session:{access_token}')
-
-    serialized_lf = session_data[b'data'] #replace with get()
+    
+    serialized_lf = session_data.get(b'data') #replace with get()
     if not serialized_lf:
         raise HTTPException(status_code=400, detail="Couldn't find your data")
 

@@ -14,7 +14,17 @@ import redis
 UPLOAD_EXTENSIONS = ['.csv', '.xlsx']
 
 # Database session initialization (https://docs.sqlalchemy.org/en/20/orm/session_basics.html#id1)
-engine = create_engine(os.getenv("DATABASE_URL"))
+engine = create_engine(
+    os.getenv("DATABASE_URL"),
+    pool_pre_ping=True,
+    pool_recycle=3600,
+    connect_args={
+        "connect_timeout": 10,
+        "read_timeout": 30,
+        "write_timeout": 30,
+    },
+)
+
 Session = sessionmaker(engine)
 
 # Logging

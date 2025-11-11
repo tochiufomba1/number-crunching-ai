@@ -287,6 +287,8 @@ def process_transactions_task(
         "data": serialized_lf
     })
 
+    redis_client.expire(f'user-session:{access_token}', 10800) # 3 hours
+
     app.helpers.emit_job_status(
         user_id,
         "data",
