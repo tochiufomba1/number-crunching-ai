@@ -78,11 +78,11 @@ def create_template(
     if template_coa_group_id != -1:
         # check that user has access to coa group, if not raise exception
         result = session.execute(
-            sa.select(UserCOAAccess.access_level)
+            sa.select(db_models.UserCOAAccess.access_level)
             .where(
                 sa.and_(
-                    UserCOAAccess.user_id == user_id,
-                    UserCOAAccess.group_id == template_coa_group_id
+                    db_models.UserCOAAccess.user_id == user_id,
+                    db_models.UserCOAAccess.group_id == template_coa_group_id
                 )
             )
         )
@@ -91,16 +91,16 @@ def create_template(
             raise HTTPException(status_code=401, detail="Unauthorized to use COA group")
 
     try:
-        file_uploaded = app.helpers.upload_file_to_s3(transactions_file)
+        object_key = app.helpers.upload_file_to_s3(transactions_file)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=f"{e}")
-
-    if not file_uploaded:
-        raise HTTPException(status_code=500, detail=f"Server failed")
-    
-    template_info = app_models.TemplateInfo(title=template_title, coa_group_id=template_coa_group_id)
-    background_tasks.add_task(app.tasks.create_template, template_info, user_id)
-    return {"message": "Processing data"}
+    except (ClientError, Exception) as e:
+        # TODO: Add log
+        raise HTTPException(status_code=500, detail="Server failure")
+    else:
+        template_info = app_models.TemplateInfo(title=template_title, coa_group_id=template_coa_group_id)
+        background_tasks.add_task(app.tasks.create_template, template_info, user_id, object_key)
+        return {"message": "Processing data"}
 
 @router.post("/transactions")
 async def process_transactions(
@@ -142,7 +142,7 @@ async def process_transactions(
 
     if not object_key:
         raise HTTPException(status_code=500, detail=f"Server failed")
-         
+
     background_tasks.add_task(
         app.tasks.process_transactions_task,
         user['user'].id,
@@ -325,26 +325,6 @@ async def get_document(
             raise HTTPException(status_code=404, detail="Document not found")
         else:
             raise HTTPException(status_code=500, detail="Error reading from S3")
-# @router.get("/{user_id}/documents/{document_name}")
-# async def get_document(
-#     user_id: int,
-#     document_name: str
-# ):
-#     # read file from s3
-#     try:
-#         file_path = app.helpers.read_s3_object_to_tempfile(document_name)
-#         print(f"FILEPATH: {file_path}")
-#         return FileResponse(file_path, filename=document_name)
-#     except Exception as e:
-#         # log(e)
-#         raise HTTPException(status_code=500, detail="Couldn't load data")
-#     finally:
-#         try:
-#             os.remove(file_path)
-#             s3_client.delete_object(Bucket=os.getenv('BUCKET_NAME'), Key=object_key)
-#         except Exception as e:
-#             # log error
-#             pass
 
 # upon account creation:
 # download generic model from s3

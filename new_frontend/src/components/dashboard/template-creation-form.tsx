@@ -6,33 +6,13 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Button } from "../ui/button";
 import { AddCOADialog } from "./add-coa-form";
-import { FormEvent, useState } from "react";
-import { useTemplate } from "@/lib/useTemplate";
-import { Template } from "@/lib/definitions";
-import { templates_mock } from "@/lib/example-data";
-import { auth } from "../../../auth";
+import { useActionState } from "react";
 import { Separator } from "../ui/separator";
+import { createTemplate } from "@/lib/actions";
 
 export default function TemplateCreationForm({ userID }: { userID: string }) {
     // const { templates, isLoading, isError } = useTemplate(userID)
-
-    const handleSubmit = async (formData: FormData) => {
-        // 'use server'
-        // const session = await auth()
-        // const request = await fetch(`${process.env.EXTERNAL_API}/api/users/${userID}/templates`,
-        //     {
-        //         method: "POST",
-        //         headers: {
-        //             "Authorization": `Bearer ${session?.user.access_token}`
-        //         },
-        //         body: formData
-        //     }
-        // )
-
-        // if(!request.ok){
-        //     return
-        // }
-    }
+    const [message, formAction, isPending] = useActionState(createTemplate, null)
 
     return (
         <Card className="w-full max-w-sm">
@@ -40,15 +20,15 @@ export default function TemplateCreationForm({ userID }: { userID: string }) {
                 <CardTitle>Create New Template</CardTitle>
             </CardHeader>
             <CardContent>
-                <form action={handleSubmit}>
+                <form action={formAction}>
                     <div className="flex flex-col gap-6">
                         <div className="grid gap-2">
-                            <Label htmlFor="template-name">Template Name</Label>
-                            <Input name="template-name" required />
+                            <Label htmlFor="template_title">Template Name</Label>
+                            <Input name="template_title" required />
                         </div>
                         <div className="grid gap-2">
-                            <Label htmlFor="template-name">Chart of Accounts (COA)</Label>
-                            <Select>
+                            <Label htmlFor="template_coa_group_id">Chart of Accounts (COA)</Label>
+                            <Select name="template_coa_group_id">
                                 <SelectTrigger className="w-full max-w-sm">
                                     <SelectValue placeholder="Select a chart of accounts" />
                                 </SelectTrigger>
@@ -61,12 +41,13 @@ export default function TemplateCreationForm({ userID }: { userID: string }) {
                         </div>
                         <div className="grid gap-2">
                             <div className="grid w-full max-w-sm items-center gap-3">
-                                <Label htmlFor="transactions">Transaction History</Label>
-                                <Input id="transactions" type="file" />
+                                <Label htmlFor="transactions_file">Transaction History</Label>
+                                <Input id="transactions_file" name="transactions_file" type="file" />
                             </div>
                         </div>
                     </div>
-                    <Button type="submit" className="w-full mt-2">Submit</Button>
+                    {message ? <p>{message}</p> : <></>}
+                    <Button type="submit" className="w-full mt-2" disabled={isPending}>Submit</Button>
                 </form>
                 <Separator className="my-4" />
                  <AddCOADialog />

@@ -77,6 +77,27 @@ export const register = async (values: z.infer<typeof RegisterSchema>) => {
     return { success: "Success" }
 }
 
+export async function createTemplate(previousState: string | null, formData: FormData) {
+    const user = await getCurrentUser()
+
+    const res = await fetch(`${process.env.EXTERNAL_API}/api/users/${user!.id}/templates`,
+        {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${user!.access_token}`
+            },
+            body: formData
+        }
+    )
+
+    if (!res.ok) {
+        return "Error"
+    }
+    else {
+        return "Success"
+    }
+}
+
 export const uploadTransactions = async (previousState: string | null, formData: FormData) => {
     const session = await auth()
     if (!session) {

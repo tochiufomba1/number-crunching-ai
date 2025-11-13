@@ -10,6 +10,48 @@ from fastapi import UploadFile
 from datasketch import MinHash, MinHashLSH
 from app.dependencies import UPLOAD_EXTENSIONS
 from botocore.exceptions import ClientError
+import tempfile
+import sqlalchemy.orm as so
+from mypy_boto3_s3.client import S3Client
+
+PAYMENT_TERMS = [
+    r"\b(?:re|e)?pay(?:ment|mt|mnt)?s?\b",
+    r"\b(?:post)?paid\b",
+    r"\b(?:pmt|pymnt|pmnt)s?\b",
+    r"(?:merchant\s+)?(?:web)?payment\b",
+    r"(?:mobile)?\bpurchase(?:s)?\b(?:\s+(?:authorized|at|-visa))?",
+]
+
+TRANSACTION_CHANNELS = [
+    r"\b(?:debit|direct|initiated|pending)\b",
+    r"\b(?:ach(?:billpay)?|ccd|ppd|atm|visa|zelle|paypal|venmo|cash\s+app)\b",
+]
+
+GENERIC_TERMS = [
+    r"\b(?:web|electronic|checkcard|deduction(?:s)?|transaction(?:s)?)\b",
+    r"\b(?:recur(?:ring)?|service(?:s)?|corporate|online|authorized)\b",
+    r"\b(?:card|ref|sq(?:u)?)\b",
+]
+
+STOPWORDS = [
+    r"\b(?:from|www|amp|the|and|of|by|to|on|at|in)\b",
+]
+
+# US state codes
+STATE_CODES = r"\b(?:al|ak|az|ar|ca|co|ct|de|fl|ga|hi|id|il|in|ia|ks|ky|la|me|md|ma|mn|ms|mo|mt|ne|nv|nh|nj|nm|ny|nc|nd|oh|ok|or|pa|ri|sc|sd|tn|tx|ut|vt|va|wa|wv|wi|wy)\b"
+
+# Combine all patterns
+NOISE_PATTERN = "|".join([
+    r"https?://\S+|www\.\S+",  # URLs
+    *PAYMENT_TERMS,
+    *TRANSACTION_CHANNELS,
+    *GENERIC_TERMS,
+    *STOPWORDS,
+    STATE_CODES,
+    r"\.com\b.*",  # .com and everything after
+    r"\d{3,}",  # Long numbers (keep short ones like "7-11")
+    r"[x]{2,}\d*",  # xxx123 patterns
+])
 
 def allowed_file(filename):
     return '.' in filename and \
@@ -29,19 +71,8 @@ def upload_file_to_s3(file: UploadFile):
         s3_client.upload_fileobj(file.file, os.getenv("BUCKET_NAME"), object_key)
     except ClientError as e:
         raise
-
-    return object_key
-
-def read_s3_object_to_tempfile(object_key):
-    file_ext = os.path.splitext(object_key)[1]
-
-    with tempfile.NamedTemporaryFile(mode="wb", suffix=file_ext, delete=False) as fp:
-        try:
-            s3_client.download_fileobj(os.getenv('BUCKET_NAME'), object_key, fp)
-            return fp.name
-        except ClientError as e:
-            os.remove(fp.name)
-            return ""
+    else:
+        return object_key
 
 def get_minhash(text):
     m = MinHash(num_perm=128)
@@ -93,42 +124,16 @@ def classify(
     """Predicts the vendors and chart of accounts of given transaction(s)"""
 
     # Clean transactions 
-    descriptions = descriptions.fill_null("")
-    descriptions = descriptions.str.strip_chars()
     simplified_descriptions  = (
         descriptions
+        .fill_null("")
         .str.to_lowercase()
+        .str.strip_chars()
         .str.replace_all(r"\.", ' ')
-        .str.replace_all(
-            r"(https?://\S+|www\.\S+|"               
-            r"\b(?:re|e)?pay(?:ment|mt|mnt)?s?\b|"  # payment, repayment, etc.
-            r"\b(?:post)?paid\b|"                   # paid, postpaid
-            r"\b(?:pmt|pymnt|pmnt)s?\b|"            # pmt, pymnt, etc.
-            r"(?:merchant\s+)?(?:web)?payment\b|"   # merchant payment, webpayment
-            r"(?:mobile)?\bpurchase(?:s)?\b(?:\s+(?:authorized|at|-visa))?|"  # mobile purchase, purchase at VISA
-            
-            # === Transaction channel/method words ===
-            r"\bdirect\b|\bdebit\b|\b(?:tel)(?:ephone)?\b|(?:initiated)|(?:pending)|"
-            r"ach(?:billpay)?|ccd|ppd|atm|fsi|fsp|rtp|rbt|visa|misc|nnt|tst|(?:i)?nst(?:ant)?|return|easysavings|zelle|"
-            r"paypal|conf|venmo|cash app|(dd)* (\*)*doordash|"
-            
-            # === Generic punctuation, whitespace, .com ===
-            r"(?:^\s+|\s+$|\s{2,}|\.com\b.*|[^\w\s])|"  # leading/trailing/multiple spaces, .com, non-alphanumerics
-            
-            # === Common stopwords ===
-            r"(?:from|www|(?:a|u)mp|httpswww.*)|"
-            r"\b(?:web|electronic|checkcard|deduction(?:s)?|trans type|des|name|e2e|online|self|authorized|phone|"
-            r"transaction(?:s)?|recur(?:ring)?|service(?:s)?|corporate|util|orig|bill(?:pay)?|"
-            r"util_bil(?:l)?|card|ret|ref|sq(?:u)?|on|the|and|of|by|to)\b|"
-            
-            # === State abbreviations / postal codes ===
-            r"\b(?:al|ak|az|ar|ca|co|ct|de|fl|ga|hi|id|il|in(?:s)?|ia|ks|ky|la|me|md|ma|mn|ms|mo|mt|"
-            r"ne|nv|nh|nj|nm|ny|nc|nd|oh|ok|or|pa|ri|sc|sd|tn|tx|ut|vt|va|wa|wv|wi|wy|p(?:o|c)s|edi|pw)\d*\b|"
-            r"[x]{2,}\d*[x]*|\d+)",
-            ' '  # replace all matches with a space
-        )
-        .str.strip_chars()  # Remove leading/trailing whitespace
-        .str.replace_all(r"\s+", ' ')  # Collapse multiple spaces
+        .str.replace_all(NOISE_PATTERN, ' ')
+        # .str.replace_all(r'[^\w\s]', ' ')
+        .str.replace_all(r'\s+', ' ')
+        .str.strip_chars()
     )
 
     # classify transactions
@@ -138,8 +143,8 @@ def classify(
     labels = [
         lbl[0].replace('__label__', '') for lbl in results
     ]
-    accounts = pl.Series("account", labels)
 
+    accounts = pl.Series("account", labels)
     accounts = (
         accounts
         .str.replace_all(r'__label__', '')
@@ -174,3 +179,71 @@ def emit_job_status(user_id: int, job_type: str, status: str):
             'status': status
         })
     print("emitted")
+
+def clean_data(data: pl.DataFrame) -> pl.DataFrame:
+    """
+    Faster vectorized version using only Polars expressions.
+    Trade-off: Less flexible but much faster on large datasets.
+    """
+    cleaned = data.with_columns([
+        # Description cleaning
+        pl.col("description")
+        .fill_null("")
+        .str.to_lowercase()
+        .str.strip_chars()
+        .str.replace_all(r"\.", ' ')
+        .str.replace_all(NOISE_PATTERN, ' ')
+        # .str.replace_all(r'[^\w\s]', ' ')
+        .str.replace_all(r'\s+', ' ')
+        .str.strip_chars(),
+        
+        # Account cleaning
+        pl.col("account")
+        .fill_null("unknown")
+        .str.replace_all(r'[^\w\s]', '')
+        .str.replace_all(r'\s+', '_')
+        .str.to_titlecase()
+        .alias("account")
+    ])
+    
+    # Filter invalid rows
+    return cleaned.filter(
+        (pl.col("description").str.len_chars() > 0) &
+        (pl.col("account") != "Unknown")
+    )
+
+def create_coa(session: so.Session, user_id: int, coa_group_name: str, coa_entries: pl.Series) -> int:
+    """ Creates COA group and its corresponding access and COA table entries """
+
+    # create coa group
+    new_coa_group = db_models.COAIDtoGroup(group_name=coa_group_name)
+    session.add(new_coa_group)
+    session.flush()
+
+    # create entry in access table
+    coa_group_id = new_coa_group.group_id
+    session.add(
+        db_models.UserCOAAccess(
+            user_id=user_id, 
+            group_id=coa_group_id, 
+            access_level="administrator"
+        )
+    )
+
+    # populate COA table with group's items
+    coa_items = [
+        db_models.COA(group_id=coa_group_id, account=account) 
+        for account in coa_entries.unique().str.replace_all(r'[^\w\s]', '').str.replace_all(r'\s+', ' ').str.to_titlecase().to_list()
+    ]
+
+    session.add_all(coa_items)
+
+    return coa_group_id
+
+def delete_s3_object(s3_client: S3Client, s3_object_key: str) -> None:
+    try:
+        response = s3_client.delete_object(Bucket=os.getenv('BUCKET_NAME'), Key=s3_object_key)
+    except ClientError as e:
+        print(e)
+    except Exception as e:
+        print(e)
