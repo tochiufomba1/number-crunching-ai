@@ -15,10 +15,13 @@ import {
 } from "@/components/ui/form"
 import { Button } from "../ui/button"
 import FormError from "../form-error"
-import { useTransition } from "react"
+import { useState, useTransition } from "react"
 import { register } from "@/lib/actions"
+import FormSuccess from "../form-success"
 
 export default function RegisterForm() {
+    const [error, setError] = useState<string | undefined>("")
+    const [success, setSuccess] = useState<string | undefined>("")
     const [isPending, startTransition] = useTransition()
     const form = useForm<z.infer<typeof RegisterSchema>>({
         resolver: zodResolver(RegisterSchema),
@@ -30,8 +33,15 @@ export default function RegisterForm() {
     });
 
     const onSubmit = (values: z.infer<typeof RegisterSchema>) => {
+        setError("")
+        setSuccess("")
+
         startTransition(() => {
             register(values)
+            .then((data) => {
+                setError(data.error)
+                setSuccess(data.success)
+            })
         })
 
     }
@@ -103,7 +113,8 @@ export default function RegisterForm() {
                             )}
                         />
                     </div>
-                    {/* {<FormError mess />} */}
+                    <FormError message={error} />
+                    <FormSuccess message={success} />
                     <Button
                         type="submit"
                         className="w-full"

@@ -201,6 +201,7 @@ def send_table_data(
         session.execute(
             sa.select(db_models.COA.account)
             .where(db_models.COA.group_id == coa_group_id)
+            .order_by(db_models.COA.account.asc())
         )
     )
 

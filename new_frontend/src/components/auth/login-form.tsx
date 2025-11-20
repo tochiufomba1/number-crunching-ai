@@ -15,10 +15,11 @@ import {
 } from "@/components/ui/form"
 import { Button } from "../ui/button"
 import FormError from "../form-error"
-import { useTransition } from "react"
+import { useState, useTransition } from "react"
 import { login } from "@/lib/actions"
 
 export default function LoginForm() {
+    const [error, setError] = useState<string | undefined>("")
     const [isPending, startTransition] = useTransition()
     const form = useForm<z.infer<typeof LoginSchema>>({
         resolver: zodResolver(LoginSchema),
@@ -29,8 +30,13 @@ export default function LoginForm() {
     });
 
     const onSubmit = (values: z.infer<typeof LoginSchema>) => {
+        setError("")
+
         startTransition(() => {
             login(values)
+            .then((data) => {
+                setError(data?.error)
+            })
         })
 
     }
@@ -84,7 +90,7 @@ export default function LoginForm() {
                             )}
                         />
                     </div>
-                    {/* {<FormError mess />} */}
+                    <FormError message={error} />
                     <Button
                         type="submit"
                         className="w-full"

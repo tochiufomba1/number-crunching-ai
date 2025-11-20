@@ -52,8 +52,6 @@ export const register = async (values: z.infer<typeof RegisterSchema>) => {
 
     const { name, email, password } = validatedFields.data
 
-    console.log(JSON.stringify(validatedFields.data))
-
     // send fetch request that registers user
     const response = await fetch(`${process.env.EXTERNAL_API}/api/auth/users`,
         {
@@ -72,9 +70,11 @@ export const register = async (values: z.infer<typeof RegisterSchema>) => {
         }
     )
 
-    const res = await response.json()
-    console.log(JSON.stringify(res))
-    return { success: "Success" }
+    if (!response.ok) {
+        return { error: "Invalid fields" }
+    }
+
+    return { success: "Account successfully created! Please log in." }
 }
 
 export async function createTemplate(previousState: string | null, formData: FormData) {
