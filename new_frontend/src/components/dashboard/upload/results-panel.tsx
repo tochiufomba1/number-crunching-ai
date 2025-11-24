@@ -7,7 +7,7 @@ import useRecords from "@/lib/useRecords"
 import Box from '@mui/material/Box'
 import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { exportRequest } from "@/lib/actions";
+import { useRouter } from "next/navigation";
 
 interface TabPanelProps {
     children?: React.ReactNode;
@@ -41,6 +41,7 @@ function CustomTabPanel(props: TabPanelProps) {
 export default function ResultsPanel() {
     const { data, isError, isLoading, updateRow }: { data: any, isError: boolean, isLoading: boolean, updateRow: any } = useRecords()
     const [value, setValue] = useState(0);
+    const router = useRouter()
 
     const handleChange = (event: React.SyntheticEvent, newValue: number) => {
         setValue(newValue);
@@ -57,13 +58,13 @@ export default function ResultsPanel() {
             <div className="w-full flex justify-end gap-3">
                  <form onSubmit={async(e: React.FormEvent) => {
                     e.preventDefault()
-                    exportRequest("csv")
+                    router.push('/dashboard/download/csv')  
                 }}>
                     <Button type="submit">Export as CSV</Button>
                 </form>
                 <form onSubmit={async(e: React.FormEvent) => {
                     e.preventDefault()
-                    exportRequest("xlsx")
+                    router.push('/dashboard/download/xlsx')
                 }}>
                     <Button type="submit">Export as Excel file</Button>
                 </form>

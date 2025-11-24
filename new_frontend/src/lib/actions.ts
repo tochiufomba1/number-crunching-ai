@@ -98,14 +98,13 @@ export async function createTemplate(previousState: string | null, formData: For
     }
 }
 
-export const uploadTransactions = async (previousState: string | null, formData: FormData) => {
+export const uploadTransactions = async (previousState: any | null, formData: FormData) => {
     const session = await auth()
     if (!session) {
-        // error response
-        return "You are not signed in"
+        return {error: "You are not signed in"}
     }
 
-    const req = await fetch(`${process.env.EXTERNAL_API}/api/users/transactions`,
+    const res = await fetch(`${process.env.EXTERNAL_API}/api/users/transactions`,
         {
             method: 'POST',
             headers: {
@@ -115,12 +114,12 @@ export const uploadTransactions = async (previousState: string | null, formData:
         }
     )
 
-    if (!req.ok) {
-        return "Error"
+    if (!res.ok) {
+        return {error: "Error occured"}
     }
 
-    // return "Success"
-    redirect('/dashboard/upload/loading')
+    const jobID = await res.json();
+    return jobID;
 }
 
 export const uploadCOA = async (formData: FormData) => {
@@ -161,13 +160,18 @@ export async function exportRequest(exportType: string) {
         throw new Error("Not signed in")
     }
 
-    await fetch(`${process.env.EXTERNAL_API}/api/users/documents/?export_type=${exportType}`, {
+    const res = await fetch(`${process.env.EXTERNAL_API}/api/users/documents/?export_type=${exportType}`, {
         headers: {
             "Authorization": `Bearer ${user.access_token}`
         }
     });
 
-    redirect('/dashboard/upload/loading')
+    if(!res.ok){
+        return {error: "Server error. Try again..."}
+    }
+
+    const jobID = await res.json()
+    return jobID;
 }
 
 // https://blog.logrocket.com/programmatically-downloading-files-browser/

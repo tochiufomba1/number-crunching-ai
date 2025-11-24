@@ -66,3 +66,10 @@ export type Message = {
     job_type: string;
     status: string;
 }
+
+export interface JobStatus {
+    success: boolean
+    job_type: string
+    filename?: string
+    error?: string
+}

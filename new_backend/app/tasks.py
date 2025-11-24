@@ -14,6 +14,7 @@ from fastapi import UploadFile, Depends, HTTPException, BackgroundTasks
 from mypy_boto3_s3.client import S3Client
 from app.dependencies import Session, get_s3_client, get_redis_connection
 from botocore.exceptions import ClientError
+import json
 
 FASTTEXT_LEARNING_RATE = 0.5
 FASTTEXT_EPOCH = 20
@@ -155,13 +156,17 @@ def process_transactions_task(
     template_id: int,
     object_key: str,
     model_name: str,
-    access_token: str
+    access_token: str,
+    job_id: str,
 ):
     """
-    s
+    Classifies transactions from a specified S3 object and saves the results
+    in a redis session.
     """
     s3_client = boto3.Session().client("s3")
     redis_client = get_redis_connection()
+
+    channel_data = {"job_id": job_id, "job_type": "tables"}
     
     # Obtain transactions file from S3
     file_ext = os.path.splitext(object_key)[1]
@@ -170,8 +175,9 @@ def process_transactions_task(
             s3_client.download_fileobj(os.getenv('BUCKET_NAME'), object_key, upload_file_fp)
         except ClientError as e:
             os.remove(upload_file_fp.name)
-            app.helpers.emit_job_status(user_id, "tables", "Failed,Server error")
-            raise HTTPException(status_code=500, detail=f"Failed to download transactions from S3: {e}")
+            channel_data |= {"success": False, "error": "Server error"}
+            redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
+            return
         transactions_filepath = upload_file_fp.name    
 
     # Enter file contents to polars dataframe
@@ -183,16 +189,16 @@ def process_transactions_task(
             )
         )
     except Exception as e:
-        app.helpers.emit_job_status(user_id, "tables", "Failed,Server Error")
-        raise HTTPException(status_code=400, detail=f"Invalid CSV file: {e}")
+        channel_data |= {"success": False, "error": "Server error"}
+        redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
+        return
 
     lf_columns = set(lf.collect_schema().names())
     missing_columns = {"description", "amount"} - lf_columns
     if missing_columns:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Missing required columns: {', '.join(missing_columns)}"
-        )
+        channel_data |= {"success": False, "error": f"Missing required columns: {', '.join(missing_columns)}"}
+        redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
+        return
 
     if "date" not in lf_columns:
         lf = lf.with_columns(pl.lit(date.today()).alias("date"))
@@ -210,7 +216,9 @@ def process_transactions_task(
     )
 
     if data.is_empty():
-        raise HTTPException(status_code=400, detail="Transaction file is empty")
+        channel_data |= {"success": False, "error": "Transactions file is empty."}
+        redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
+        return
 
     # download fasttext model from s3
     with tempfile.NamedTemporaryFile(mode="wb", suffix=".bin", delete=False) as model_fp:
@@ -218,14 +226,18 @@ def process_transactions_task(
             s3_client.download_fileobj(os.getenv('BUCKET_NAME'), model_name, model_fp)
         except ClientError as e:
             os.remove(model_fp.name)
-            raise HTTPException(status_code=500, detail=f"Failed to download model from S3: {e}")
+            channel_data |= {"success": False, "error": "Server error"}
+            redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
+            return # add log
         model_path = model_fp.name
 
     try:
         model = fasttext.load_model(model_path)
     except Exception as e:
+        channel_data |= {"success": False, "error": "Server error"}
+        redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
         os.remove(model_path)
-        raise
+        return # log
 
     # Classify transactions
     try:
@@ -234,8 +246,9 @@ def process_transactions_task(
         data = data.with_columns([account, prediction_confidence, simplified_descriptions,group]).lazy()
         lf = lf.join(data, on='description', how='left')
     except Exception as e:
-        app.helpers.emit_job_status(user_id, "tables", f"Failed,Server error")
-        raise
+        channel_data |= {"success": False, "error": "Server error"}
+        redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
+        return # log
     finally:
         os.remove(model_path)
 
@@ -244,67 +257,71 @@ def process_transactions_task(
     except Exception as e:
         print(e)
 
+    # create session data
     serialized_lf = lf.serialize()
     redis_client.hset(f'user-session:{access_token}', mapping={
         "template_id": template_id,
         "data": serialized_lf
     })
-
     redis_client.expire(f'user-session:{access_token}', 10800) # 3 hours
 
-    app.helpers.emit_job_status(
-        user_id,
-        "data",
-        "Success"
-    )
-
+    # publish success event
+    channel_data |= {"success": True}
+    redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
     return
 
 def create_export_file(
     user_id: int,
     access_token: str,
     export_type: str,
+    job_id: str,
 ):
     redis_client = get_redis_connection()
     s3_client = boto3.Session().client("s3")
-    serialized_lf = redis_client.hget(f'user-session:{access_token}', 'data')
 
+    channel_data = {"job_id": job_id, "job_type": "export"}
+
+    serialized_lf = redis_client.hget(f'user-session:{access_token}', 'data')
     if not serialized_lf:
-        app.helpers.emit_job_status(user_id, "download", "Failed,Server error")
+        channel_data |= {"success": False, "error": "Sever Error."}
+        redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
+        return
 
     try:
         lf = pl.LazyFrame.deserialize(io.BytesIO(serialized_lf))
     except Exception as e:
-        raise HTTPException(status_code=500)
+        channel_data |= {"success": False, "error": "Sever Error."}
+        redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
+    else:
+        lf_columns = set(lf.collect_schema().names())
+        export_columns = list(lf_columns - {"amount_right", "simplified_descriptions"})
+        data = (
+            lf
+            .select(export_columns)
+            .collect()
+        )
 
-    lf_columns = set(lf.collect_schema().names())
-    export_columns = list(lf_columns - {"amount_right", "simplified_descriptions"})
-    data = (
-        lf
-        .select(export_columns)
-        .collect()
-    )
-
-    file_ext = "." + export_type
-    with tempfile.NamedTemporaryFile(mode="wb", suffix=file_ext) as fp:
-        match export_type:
-            case "xlsx":
-                data.write_excel(workbook=fp)
-            case "csv":
-                data.write_csv(fp)
-            case "_":
-                app.helpers.emit_job_status(user_id, "download", "Failed,Invalid file type") 
-                return
-                
-        try:
-            filename = os.path.basename(fp.name)
-            response = s3_client.upload_file(fp.name, os.getenv("BUCKET_NAME"), filename)
-            app.helpers.emit_job_status(user_id, "download", f"Success,{filename}") # optionally split like os.path.splitext(fp.name)[0]
-        except ClientError as e:
-            app.helpers.emit_job_status(user_id, "download", "Failed,Server error")  
-        else:
-            print(filename)
-            return           
+        file_ext = "." + export_type
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=file_ext) as fp:
+            match export_type:
+                case "xlsx":
+                    data.write_excel(workbook=fp)
+                case "csv":
+                    data.write_csv(fp)
+                case "_":
+                    channel_data |= {"success": False, "error": "Unsupported file export type provided."}
+                    redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
+                    return
+                    
+            try:
+                filename = os.path.basename(fp.name)
+                response = s3_client.upload_file(fp.name, os.getenv("BUCKET_NAME"), filename)
+            except ClientError as e:
+                channel_data |= {"success": False, "error": "Sever Error."}
+                redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
+            else:
+                channel_data |= {"success": True, "filename": filename}
+                redis_client.publish(f"user:{user_id}", json.dumps(channel_data))        
     
 
     

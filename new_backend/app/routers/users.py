@@ -143,15 +143,17 @@ async def process_transactions(
     if not object_key:
         raise HTTPException(status_code=500, detail=f"Server failed")
 
+    job_id = str(uuid.uuid4())
     background_tasks.add_task(
         app.tasks.process_transactions_task,
         user['user'].id,
         template_id,
         object_key, 
         template_access.model_name, 
-        user['access_token']
+        user['access_token'],
+        job_id,
     )
-    return {"message": "Notification sent in the background"}
+    return {"job_id": job_id}
 
 @router.get("/tables")
 def send_table_data(
@@ -295,7 +297,10 @@ def download_request(
         raise HTTPException(status_code=400, detail="Couldn't find your data")
 
     # run background task that creates tempfile
-    background_tasks.add_task(app.tasks.create_export_file, user["user"].id, user["access_token"], export_type)
+    job_id = str(uuid.uuid4())
+    background_tasks.add_task(app.tasks.create_export_file, user["user"].id, user["access_token"], export_type, job_id)
+    
+    return {"job_id": job_id}
 
 @router.get("/{user_id}/documents/{document_name}")
 async def get_document(
