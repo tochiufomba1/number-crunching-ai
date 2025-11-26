@@ -20,18 +20,34 @@ export function getColumns(tableType: string, selectOptions: any[]) {
       }),
       columnHelper.accessor('number', {
         cell: TableCell,
+        meta: {
+          type: "number",
+        }
       }),
       columnHelper.accessor('payee', {
         cell: TableCell,
+        meta: {
+          type: "text",
+        }
       }),
       columnHelper.accessor('description', {
         cell: TableCell,
+        meta: {
+          type: "text",
+        }
       }),
       columnHelper.accessor('amount', {
        cell: TableCell,
+       meta: {
+          type: "number",
+        }
       }),
       columnHelper.accessor('account', {
         cell: TableCell,
+        meta: {
+          type: "search",
+          options: selectOptions,
+        }
       }),
       columnHelper.display({
         id: "edit",
@@ -58,7 +74,7 @@ export function getColumns(tableType: string, selectOptions: any[]) {
       columnHelper.accessor('account', {
         cell: TableCell,
         meta: {
-          type: "select",
+          type: "search",
           options: selectOptions,
         }
       }),

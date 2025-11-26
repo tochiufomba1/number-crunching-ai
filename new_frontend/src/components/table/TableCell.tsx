@@ -1,6 +1,7 @@
 "use client"
 import { useState, useEffect, ChangeEvent } from "react";
 import "./table.css";
+import { ComboBox } from "../combo-box";
 // import Modal from "../modal/Modal";
 // import AddVendorForm from "../AddVendor-form";
 
@@ -48,6 +49,12 @@ export function TableCell({
           </option>
         ))}
       </select>
+    ) : columnMeta?.type === "search" ? (
+      <ComboBox
+        initialValue={initialValue}
+        options={columnMeta?.options}
+        onSearchChange={onSearchChange}
+      />
     ) : (
       <input
         value={value}
