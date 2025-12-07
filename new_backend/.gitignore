@@ -3,3 +3,5 @@
 __pycache__/
 aws*
 s.txt
+x.py
+nlTraining.csv

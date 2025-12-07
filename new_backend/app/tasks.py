@@ -12,12 +12,13 @@ import app.models.database_models as db_models
 from typing import Annotated
 from fastapi import UploadFile, Depends, HTTPException, BackgroundTasks
 from mypy_boto3_s3.client import S3Client
-from app.dependencies import Session, get_s3_client, get_redis_connection
+from app.dependencies import Session, get_s3_client, get_redis_connection, logger
 from botocore.exceptions import ClientError
 import json
+import uuid
 
-FASTTEXT_LEARNING_RATE = 0.5
-FASTTEXT_EPOCH = 20
+FASTTEXT_LEARNING_RATE = 0.1
+FASTTEXT_EPOCH = 5
 
 def create_coa(
     coa_group_name: str,
@@ -25,37 +26,38 @@ def create_coa(
     user_id: int
 ):
     """
-
+    Creates chart of accounts (coa) from S3 object
     """
     s3_client = boto3.Session().client("s3")
+
+    #channel_data = {"job_id": ,"job_type": "coa_create"}
     
     try:
         s3_object = s3_client.get_object(Bucket=os.getenv("BUCKET_NAME"), Key=s3_object_key)
-        file_stream = s3_object["Body"]
-        lf = pl.scan_csv(file_stream, with_column_names=lambda cols: [col.lower() for col in cols])
+        lf = pl.scan_csv(s3_object["Body"], with_column_names=lambda cols: [col.lower() for col in cols])
     except Exception as e:
-        print(e)
+        logger.exception(f"Error during create_coa() when trying to create polars lazyframe: {e}")
+        # app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Server error")
     else:
         with Session() as session:
             lf_columns = set(lf.collect_schema().names())
             missing_columns = {"account"} - lf_columns
             if missing_columns:
-                #app.helpers.emit_job_status(user_id, "tables", f"Failed,Missing required columns: {', '.join(missing_columns)}")
+                #app.helpers.publish_status(redis_client, user_id, channel_data, False, error=f"Missing required columns: {', '.join(missing_columns)}")
                 return
 
             data = lf.select(pl.col("account")).collect()
 
             if data.is_empty():
-                #app.helpers.emit_job_status(user_id, "tables", f"Failed,Empty file")
+                #app.helpers.publish_status(redis_client, user_id, channel_data, False, error=COA file is empty")
                 return
             
             app.helpers.create_coa(session, user_id, coa_group_name, data["account"])
-            # app.helpers.emit_job_status(user_id, "new_coa_group", "Success")
-
-            app.helpers.delete_s3_object(s3_client, s3_object_key)
+            #app.helpers.publish_status(redis_client, user_id, channel_data, True,)
 
             session.commit()
-            return
+    finally:
+        app.helpers.delete_s3_object(s3_client, s3_object_key)
 
 def create_template(
     template_info: app_models.TemplateInfo,
@@ -71,204 +73,178 @@ def create_template(
     5. Upload trained model to S3.
     """
     s3_client = boto3.Session().client("s3")
+
+    # channel_data = {"job_id": , "job_type": "template_creation"}
     
     # Step 1: Parse uploaded transaction CSV
     try:
         s3_object = s3_client.get_object(Bucket=os.getenv("BUCKET_NAME"), Key=s3_object_key)
-        transactions = s3_object["Body"]
-        lf = pl.scan_csv(transactions, with_column_names=lambda cols: [col.lower() for col in cols])
-    except ClientError as e:
-        print(e)
+        lf = pl.scan_csv(
+            s3_object["Body"], 
+            with_column_names=lambda cols: [col.lower() for col in cols],
+            schema_overrides={"amount": pl.Float64},
+            null_values=["", "NA", "null"],
+        )
     except Exception as e:
-        print(e)
-        #app.helpers.emit_job_status(user_id, "tables", "Failed,Server error")
-    else:
-        with Session() as session:
-            lf = lf.rename({"memo":"description"}, strict=False)
+        logger.exception(f"Error during create_template() when trying to create polars lazyframe: {e}")
+        # app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Server error")
+        return
+    finally:
+        app.helpers.delete_s3_object(s3_client, s3_object_key)
 
-            lf_columns = set(lf.collect_schema().names())
-            missing_columns = {"description", "account", "amount"} - lf_columns
-            if missing_columns:
-                app.helpers.emit_job_status(user_id, "tables", f"Failed,Missing required columns: {', '.join(missing_columns)}")
-                return
+    # Check for required columns
+    lf = lf.rename({"memo":"description"}, strict=False)
+    
+    lf_columns = set(lf.collect_schema().names())
+    missing_columns = {"description", "account", "amount"} - lf_columns
+    if missing_columns:
+        #app.helpers.publish_status(redis_client, user_id, channel_data, False, error=f"Missing required columns: {', '.join(missing_columns)}")
+        return
 
-            data = (
-                lf
-                .select(["description", "account", "amount"]) # do modifications on 'account' rep
-                .collect()
-            )
+    # Collect data
+    data = lf.select(["description", "account", "amount"]).collect()
+    
+    if data.is_empty():
+        # app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Transactions file is empty")
+        return
 
-            if data.is_empty():
-                app.helpers.emit_job_status(user_id, "tables", f"Failed,Empty file")
-                return
+    data = app.helpers.normalize_text(data)
 
-            # Step 2: Create new COA group (if needed) 
-            coa_group_id = template_info.coa_group_id
-            if coa_group_id == -1:
-                coa_group_id = app.helpers.create_coa(session, user_id, f"{template_info.title}_COA", data["account"])
+    lines = (
+        data
+        .filter(
+            (pl.col('account').is_not_null()) &
+            (pl.col('account').str.len_chars() > 0) &
+            (pl.col('normalized_description').is_not_null()) &
+            (pl.col('normalized_description').str.len_chars() > 0) &
+            (pl.col('normalized_description').str.count_matches(r'\S+') >= 3)
+        )
+        .select(
+            pl.format("__label__{} {}", 'account', 'normalized_description').alias('line')
+        )
+        .get_column('line')
+        .to_list()
+    )
 
-            # Step 3a: Create Template
-            model_name = f"{secrets.token_hex(16)}.bin"
-            new_template = db_models.Template(title=template_info.title, model_name=model_name, coa_group_id=coa_group_id)
-            session.add(new_template)
-            session.flush()
-
-            session.add(db_models.UserTemplateAccess(template_id=new_template.id, user_id=user_id, access_level="administrator"))
-
-            # Step 3b: Add transactions to database
-            transactions = [db_models.Transaction(description=row['description'], account=row["account"], amount=row['amount'], template_id=new_template.id) for row in data.iter_rows(named=True)]
-            session.add_all(transactions)
-
-            # Step 4: Train Fasttext models on transactions
-            cleaned_data = app.helpers.clean_data(data)
-
-            lines = [
-                f"__label__{t['account']} {t['description']}"
-                for t in cleaned_data.iter_rows(named=True)
-            ]
+    try:
+        fd, training_file_path = tempfile.mkstemp(suffix=".txt", text=True)
+        _, model_file_path = tempfile.mkstemp(suffix=".bin")
         
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt") as train_fp, \
-            tempfile.NamedTemporaryFile(mode="w", suffix=".bin") as model_fp:
-                try:
-                    train_fp.write("\n".join(lines))
-                    model = fasttext.train_supervised(input=train_fp.name, lr=FASTTEXT_LEARNING_RATE, epoch=FASTTEXT_EPOCH)
+        with os.fdopen(fd, 'w') as train_fp:
+            train_fp.write("\n".join(lines))
+             
+        model = fasttext.train_supervised(input=training_file_path)
+        model.save_model(model_file_path)
+        
+        model_name = f"{str(uuid.uuid4())}.bin"
+        s3_client.upload_file(model_file_path, os.getenv("BUCKET_NAME"), model_name)
+    except Exception as e:
+        logger.exception(f"Model creation failed (function: create_template): {e}")
+        # app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Server error")
+    finally:
+        app.helpers.cleanup_tempfiles([training_file_path, model_file_path])
+    
+    with Session() as session:
+        # Step 2: Create new COA group (if needed) 
+        coa_group_id = template_info.coa_group_id
+        if coa_group_id == -1:
+            coa_group_id = app.helpers.create_coa(session, user_id, f"{template_info.title}_COA", data["account"])
 
-                    # Step 5: Upload model to S3
-                    model.save_model(model_fp.name)
-                    response = s3_client.upload_file(model_fp.name, os.getenv("BUCKET_NAME"), model_name)
-                except ClientError as e:
-                    print(f"ERROR: {e}")
-                    app.helpers.emit_job_status(user_id, "tables", f"Failed,Couldn't upload your template")
-                    return
-                except Exception as e:
-                    print(f"ERROR: 1 {e}")
-                    app.helpers.emit_job_status(user_id, "tables", f"Failed,Server error")
-                    return
-            
-            # delete transactions file
-            app.helpers.delete_s3_object(s3_client, s3_object_key)
- 
-            session.commit()
-            return
+        # Step 3a: Create Template
+        new_template = db_models.Template(title=template_info.title, model_name=model_name, coa_group_id=coa_group_id)
+        session.add(new_template)
+        session.flush()
+
+        session.add(db_models.UserTemplateAccess(template_id=new_template.id, user_id=user_id, access_level="administrator"))
+
+        # Step 3b: Add transactions to database
+        transactions = [db_models.Transaction(description=row['description'], account=row["account"], amount=row['amount'], template_id=new_template.id) for row in data.iter_rows(named=True)]
+        session.add_all(transactions)
+        session.commit()
 
 def process_transactions_task(
     user_id: int,
     template_id: int,
-    object_key: str,
+    s3_object_key: str,
     model_name: str,
     access_token: str,
     job_id: str,
 ):
     """
-    Classifies transactions from a specified S3 object and saves the results
+    Classifies transactions from the specified S3 object and saves the results
     in a redis session.
     """
     s3_client = boto3.Session().client("s3")
     redis_client = get_redis_connection()
 
     channel_data = {"job_id": job_id, "job_type": "tables"}
-    
+
     # Obtain transactions file from S3
-    file_ext = os.path.splitext(object_key)[1]
-    with tempfile.NamedTemporaryFile(mode="wb", suffix=file_ext, delete=False) as upload_file_fp:
-        try:
-            s3_client.download_fileobj(os.getenv('BUCKET_NAME'), object_key, upload_file_fp)
-        except ClientError as e:
-            os.remove(upload_file_fp.name)
-            channel_data |= {"success": False, "error": "Server error"}
-            redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
+    try:
+        s3_object = s3_client.get_object(Bucket=os.getenv("BUCKET_NAME"), Key=s3_object_key)
+        lf = pl.scan_csv(
+            s3_object["Body"], 
+            with_column_names=lambda cols: [col.lower() for col in cols],
+            schema_overrides={"amount": pl.Float64},
+            null_values=["", "NA", "null"],
+        ) 
+
+        # Check for required columns
+        lf_columns = set(lf.collect_schema().names())
+        missing_columns = {"description", "amount"} - lf_columns
+
+        if missing_columns:
+            app.helpers.publish_status(redis_client, user_id, channel_data, False, error=f"Missing required columns: {', '.join(missing_columns)}")
             return
-        transactions_filepath = upload_file_fp.name    
 
-    # Enter file contents to polars dataframe
-    try:
-        lf = (
-            pl.scan_csv(
-                transactions_filepath,
-                with_column_names=lambda cols: [col.lower() for col in cols]
-            )
-        )
-    except Exception as e:
-        channel_data |= {"success": False, "error": "Server error"}
-        redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
-        return
+        # Add optional columns with defaults
+        if "date" not in lf_columns:
+            lf = lf.with_columns(pl.lit(date.today()).alias("date"))
+        if "number" not in lf_columns:
+            lf = lf.with_columns(pl.lit("").alias("number"))
+        if "payee" not in lf_columns:
+            lf = lf.with_columns(pl.lit("").alias("payee"))
 
-    lf_columns = set(lf.collect_schema().names())
-    missing_columns = {"description", "amount"} - lf_columns
-    if missing_columns:
-        channel_data |= {"success": False, "error": f"Missing required columns: {', '.join(missing_columns)}"}
-        redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
-        return
+        # Collect data
+        data = lf.select(["date", "number", "payee", "description", "amount"]).collect()
+    
+        if data.is_empty():
+            app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Transactions file is empty")
+            return
 
-    if "date" not in lf_columns:
-        lf = lf.with_columns(pl.lit(date.today()).alias("date"))
-
-    if "number" not in lf_columns:
-        lf = lf.with_columns(pl.lit("").alias("number"))
-
-    if "payee" not in lf_columns:
-        lf = lf.with_columns(pl.lit("").alias("payee"))
-
-    data = (
-        lf
-        .select(["description", "amount"])
-        .collect()
-    )
-
-    if data.is_empty():
-        channel_data |= {"success": False, "error": "Transactions file is empty."}
-        redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
-        return
-
-    # download fasttext model from s3
-    with tempfile.NamedTemporaryFile(mode="wb", suffix=".bin", delete=False) as model_fp:
-        try:
+        # Download and load fasttext model
+        fd, model_file_path = tempfile.mkstemp(suffix=".bin")
+        with os.fdopen(fd, 'wb') as model_fp:
             s3_client.download_fileobj(os.getenv('BUCKET_NAME'), model_name, model_fp)
-        except ClientError as e:
-            os.remove(model_fp.name)
-            channel_data |= {"success": False, "error": "Server error"}
-            redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
-            return # add log
-        model_path = model_fp.name
 
-    try:
-        model = fasttext.load_model(model_path)
-    except Exception as e:
-        channel_data |= {"success": False, "error": "Server error"}
-        redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
-        os.remove(model_path)
-        return # log
+        model = fasttext.load_model(model_file_path)
 
-    # Classify transactions
-    try:
+        # Classify transactions
         descriptions = data['description']
         account, prediction_confidence, simplified_descriptions, group = app.helpers.classify(descriptions, model)
-        data = data.with_columns([account, prediction_confidence, simplified_descriptions,group]).lazy()
-        lf = lf.join(data, on='description', how='left')
+        data = data.with_columns([account, prediction_confidence, simplified_descriptions,group]) # add additional account field
+
+        # Compress dataframe for redis session storage
+        parquet_buffer = io.BytesIO()
+        data.write_parquet(parquet_buffer, compression="zstd")
+        parquet_bytes = parquet_buffer.getvalue()
+
+        # Create session
+        pipe = redis_client.pipeline()
+        pipe.hset(f'user-session:{access_token}', mapping={
+            "template_id": template_id,
+            "data": parquet_bytes
+        })
+        redis_client.expire(f'user-session:{access_token}', 10800) # 3 hours
+        pipe.execute()
     except Exception as e:
-        channel_data |= {"success": False, "error": "Server error"}
-        redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
-        return # log
+        logger.exception(f"Error during classification: {e}")
+        app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Server error")
+    else:
+        app.helpers.publish_status(redis_client, user_id, channel_data, True,)
     finally:
-        os.remove(model_path)
-
-    try:
-        response = s3_client.delete_object(Bucket=os.getenv('BUCKET_NAME'), Key=object_key)
-    except Exception as e:
-        print(e)
-
-    # create session data
-    serialized_lf = lf.serialize()
-    redis_client.hset(f'user-session:{access_token}', mapping={
-        "template_id": template_id,
-        "data": serialized_lf
-    })
-    redis_client.expire(f'user-session:{access_token}', 10800) # 3 hours
-
-    # publish success event
-    channel_data |= {"success": True}
-    redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
-    return
+        app.helpers.cleanup_tempfiles(model_file_path)
+        app.helpers.delete_s3_object(s3_client, s3_object_key)       
 
 def create_export_file(
     user_id: int,
@@ -281,47 +257,48 @@ def create_export_file(
 
     channel_data = {"job_id": job_id, "job_type": "export"}
 
-    serialized_lf = redis_client.hget(f'user-session:{access_token}', 'data')
-    if not serialized_lf:
-        channel_data |= {"success": False, "error": "Sever Error."}
-        redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
+    parquet_bytes = redis_client.hget(f'user-session:{access_token}', 'data')
+    if not parquet_bytes:
+        logger.exception(f"Error during create_export_file() when retrieving redis session data: {e}")
+        app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Failed to retrieve table data")
         return
 
     try:
-        lf = pl.LazyFrame.deserialize(io.BytesIO(serialized_lf))
+        lf = pl.read_parquet(io.BytesIO(parquet_bytes)).lazy()
     except Exception as e:
-        channel_data |= {"success": False, "error": "Sever Error."}
-        redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
-    else:
-        lf_columns = set(lf.collect_schema().names())
-        export_columns = list(lf_columns - {"amount_right", "simplified_descriptions"})
-        data = (
-            lf
-            .select(export_columns)
-            .collect()
-        )
+        logger.exception(f"Error during create_export_file() when deserializing polars lazy frame: {e}")
+        app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Failed to retrieve table data")
+        return
 
-        file_ext = "." + export_type
-        with tempfile.NamedTemporaryFile(mode="wb", suffix=file_ext) as fp:
-            match export_type:
-                case "xlsx":
-                    data.write_excel(workbook=fp)
-                case "csv":
-                    data.write_csv(fp)
-                case "_":
-                    channel_data |= {"success": False, "error": "Unsupported file export type provided."}
-                    redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
-                    return
-                    
-            try:
-                filename = os.path.basename(fp.name)
-                response = s3_client.upload_file(fp.name, os.getenv("BUCKET_NAME"), filename)
-            except ClientError as e:
-                channel_data |= {"success": False, "error": "Sever Error."}
-                redis_client.publish(f"user:{user_id}", json.dumps(channel_data))
-            else:
-                channel_data |= {"success": True, "filename": filename}
-                redis_client.publish(f"user:{user_id}", json.dumps(channel_data))        
+    # Collect relevant table data for export
+    lf_columns = set(lf.collect_schema().names())
+    export_columns = list(lf_columns - {"amount_right", "simplified_descriptions"})
+    data = lf.select(export_columns).collect()
+
+    # Write table data to specified file format
+    file_ext = "." + export_type
+    fd, export_file_path = tempfile.mkstemp(suffix=file_ext)
+    with os.fdopen(fd, 'wb') as fp:
+        match export_type:
+            case "xlsx":
+                data.write_excel(workbook=fp)
+            case "csv":
+                data.write_csv(fp)
+            case "_":
+                app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Unsupported file export type provided")
+                return
+
+    # Upload to S3 and notify user of result            
+    try:
+        filename = os.path.basename(export_file_path)
+        s3_client.upload_file(export_file_path, os.getenv("BUCKET_NAME"), filename)
+    except ClientError as e:
+        logger.exception(f"Failed to fetch S3 object {filename}: {e}")
+        app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Server error")
+    else:
+        app.helpers.publish_status(redis_client, user_id, channel_data, True, filename=filename)
+    finally:
+        app.helpers.cleanup_tempfiles(export_file_path)
     
 
     

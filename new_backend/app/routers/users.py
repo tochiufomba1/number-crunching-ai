@@ -37,12 +37,11 @@ def create_new_chart_of_accounts(
     except ValueError as e:
         raise HTTPException(status_code=422, detail="Invalid file type")
     except Exception as e:
-        # log
+        logger.exception(f"Failed to upload coa file to S3: {e}")
         raise HTTPException(status_code=500, detail="Server error")
     else:
         background_tasks.add_task(app.tasks.create_coa, coa_group_name, object_key, user_id)
-
-    return {"message": "processing..."}
+        return {"message": "processing..."}
 
 @router.get("/{user_id}/templates")
 def get_user_templates(
@@ -95,7 +94,7 @@ def create_template(
     except ValueError as e:
         raise HTTPException(status_code=422, detail=f"{e}")
     except (ClientError, Exception) as e:
-        # TODO: Add log
+        logger.exception(f"Error during S3 upload (function: create_template): {e}")
         raise HTTPException(status_code=500, detail="Server failure")
     else:
         template_info = app_models.TemplateInfo(title=template_title, coa_group_id=template_coa_group_id)
@@ -139,10 +138,11 @@ async def process_transactions(
         object_key = app.helpers.upload_file_to_s3(transactions_file)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=f"{e}")
-
-    if not object_key:
+    except Exception as e:
+        logger.exception(f"Error uploading to S3 (function: process_transactions): {e}")
         raise HTTPException(status_code=500, detail=f"Server failed")
 
+    # Start background task
     job_id = str(uuid.uuid4())
     background_tasks.add_task(
         app.tasks.process_transactions_task,
@@ -153,6 +153,7 @@ async def process_transactions(
         user['access_token'],
         job_id,
     )
+
     return {"job_id": job_id}
 
 @router.get("/tables")
@@ -164,17 +165,15 @@ def send_table_data(
     access_token = user["access_token"]
     session_data = redis_client.hgetall(f'user-session:{access_token}')
     
-    serialized_lf = session_data.get(b'data') #replace with get()
-    if not serialized_lf:
-        raise HTTPException(status_code=400, detail="Couldn't find your data")
+    parquet_bytes = session_data.get(b'data')
+    if not parquet_bytes:
+        raise HTTPException(status_code=500, detail="Couldn't find your data")
 
     # send data view to client
     try:
-        lf = pl.LazyFrame.deserialize(io.BytesIO(serialized_lf))
+        df = pl.read_parquet(io.BytesIO(parquet_bytes))
     except Exception as e:
-        raise HTTPException(status_code=500)
-
-    df = lf.collect()
+        raise HTTPException(status_code=500) 
 
     itemized = df.select(["date", "number", "payee", "description", "amount", "account", "group"]).to_dicts()
 
@@ -221,19 +220,21 @@ def update_itemized_table(
 ):
     access_token = user["access_token"]
 
-    serialized_lf = redis_client.hget(f'user-session:{access_token}', 'data')
-    if not serialized_lf:
-        raise HTTPException(status_code=400, detail="Couldn't find your data")
+    parquet_bytes = redis_client.hget(f'user-session:{access_token}', 'data')
+    if not parquet_bytes:
+        raise HTTPException(status_code=500, detail="Couldn't find your data")
 
     try:
-        lf = pl.LazyFrame.deserialize(io.BytesIO(serialized_lf))
+        lf = pl.read_parquet(io.BytesIO(parquet_bytes)).lazy()
     except Exception as e:
+        logger.exception(f"Error when reading parquet bytes (function: update_itemized_table): {e}")
         raise HTTPException(status_code=500)
 
     lf = lf.with_columns(
         pl.when(
             pl.col("date") == data.date, 
-            pl.col("description") == data.description
+            pl.col("description") == data.description,
+            pl.col("amount") == data.amount
         )
         .then(pl.lit(data.account))
         .otherwise(pl.col("account"))
@@ -241,10 +242,10 @@ def update_itemized_table(
     )
 
     try:
-        updated_serialized_lf = lf.serialize()
-        redis_client.hset(f'user-session:{access_token}', key='data', value=updated_serialized_lf)
+        updated_parquet_bytes = app.helpers.compress_dataframe(lf.collect())
+        redis_client.hset(f'user-session:{access_token}', key='data', value=updated_parquet_bytes)
     except Exception as e:
-        print(e)
+        logger.exception(f"Error when compressing and saving updated dataframe (function: update_itemized_table): {e}")
         raise HTTPException(status_code=500, detail="Couldn't update summary table")
 
     return {"message": "Row successfully updated"}
@@ -256,14 +257,15 @@ def update_summary_table(
     redis_client: Annotated[Redis, Depends(get_redis_connection)]
 ):
     access_token = user["access_token"]
-    serialized_lf = redis_client.hget(f'user-session:{access_token}', 'data')
+    parquet_bytes = redis_client.hget(f'user-session:{access_token}', 'data')
 
-    if not serialized_lf:
+    if not parquet_bytes:
         raise HTTPException(status_code=400, detail="Couldn't find your data")
 
     try:
-        lf = pl.LazyFrame.deserialize(io.BytesIO(serialized_lf))
+        lf = pl.read_parquet(io.BytesIO(parquet_bytes)).lazy()
     except Exception as e:
+        logger.exception(f"Error when reading parquet bytes (function: update_summary_table): {e}")
         raise HTTPException(status_code=500)
 
     lf = lf.with_columns(
@@ -274,10 +276,10 @@ def update_summary_table(
     )
 
     try:
-        updated_serialized_lf = lf.serialize()
-        redis_client.hset(f'user-session:{access_token}', key='data', value=updated_serialized_lf)
+        updated_parquet_bytes = app.helpers.compress_dataframe(lf.collect())
+        redis_client.hset(f'user-session:{access_token}', key='data', value=updated_parquet_bytes)
     except Exception as e:
-        print(e)
+        logger.exception(f"Error when compressing and saving updated dataframe (function: update_summary_table): {e}")
         raise HTTPException(status_code=500, detail="Couldn't update summary table")
 
     return {"message": "Values successfully updated"}

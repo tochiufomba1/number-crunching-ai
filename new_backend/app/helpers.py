@@ -2,17 +2,19 @@ import os
 import uuid
 import boto3
 import fasttext
-import socketio
 import numpy as np
 import polars as pl
 import networkx as nx
 from fastapi import UploadFile
 from datasketch import MinHash, MinHashLSH
-from app.dependencies import UPLOAD_EXTENSIONS
+from app.dependencies import UPLOAD_EXTENSIONS, logger
 from botocore.exceptions import ClientError
 import tempfile
 import sqlalchemy.orm as so
 from mypy_boto3_s3.client import S3Client
+import json
+import io
+import app.models.database_models as db_models
 
 PAYMENT_TERMS = [
     r"\b(?:re|e)?pay(?:ment|mt|mnt)?s?\b",
@@ -24,7 +26,7 @@ PAYMENT_TERMS = [
 
 TRANSACTION_CHANNELS = [
     r"\b(?:debit|direct|initiated|pending)\b",
-    r"\b(?:ach(?:billpay)?|ccd|ppd|atm|visa|zelle|paypal|venmo|cash\s+app)\b",
+    r"\b(?:ach(?:billpay)?|ccd|ppd|atm|visa|zelle|paypal|quickpay|venmo|cash\s+app)\b",
 ]
 
 GENERIC_TERMS = [
@@ -34,7 +36,7 @@ GENERIC_TERMS = [
 ]
 
 STOPWORDS = [
-    r"\b(?:from|www|amp|the|and|of|by|to|on|at|in)\b",
+    r"\b(?:from|www|amp|the|and|of|by|to|on|at|in|with)\b",
 ]
 
 # US state codes
@@ -67,17 +69,15 @@ def upload_file_to_s3(file: UploadFile):
 
     # upload file to s3
     object_key = f"{uuid.uuid4()}_{file.filename}"
-    try:
-        s3_client.upload_fileobj(file.file, os.getenv("BUCKET_NAME"), object_key)
-    except ClientError as e:
-        raise
-    else:
-        return object_key
+    
+    s3_client.upload_fileobj(file.file, os.getenv("BUCKET_NAME"), object_key)
+
+    return object_key
 
 def get_minhash(text):
     m = MinHash(num_perm=128)
     
-    words = text.split() #[:3]
+    words = text.split()[:3]
     for shingle in set(words):
         m.update(shingle.encode('utf8'))
         
@@ -170,48 +170,6 @@ def classify(
    
     return accounts, prediction_confidence, simplified_descriptions.alias("simplified_descriptions"), groups
 
-def emit_job_status(user_id: int, job_type: str, status: str):
-    with socketio.SimpleClient() as sio:
-        sio.connect('http://localhost:3000')
-        sio.emit(job_type, {
-            'recipient': str(user_id),
-            'job_type': job_type,
-            'status': status
-        })
-    print("emitted")
-
-def clean_data(data: pl.DataFrame) -> pl.DataFrame:
-    """
-    Faster vectorized version using only Polars expressions.
-    Trade-off: Less flexible but much faster on large datasets.
-    """
-    cleaned = data.with_columns([
-        # Description cleaning
-        pl.col("description")
-        .fill_null("")
-        .str.to_lowercase()
-        .str.strip_chars()
-        .str.replace_all(r"\.", ' ')
-        .str.replace_all(NOISE_PATTERN, ' ')
-        # .str.replace_all(r'[^\w\s]', ' ')
-        .str.replace_all(r'\s+', ' ')
-        .str.strip_chars(),
-        
-        # Account cleaning
-        pl.col("account")
-        .fill_null("unknown")
-        .str.replace_all(r'[^\w\s]', '')
-        .str.replace_all(r'\s+', '_')
-        .str.to_titlecase()
-        .alias("account")
-    ])
-    
-    # Filter invalid rows
-    return cleaned.filter(
-        (pl.col("description").str.len_chars() > 0) &
-        (pl.col("account") != "Unknown")
-    )
-
 def create_coa(session: so.Session, user_id: int, coa_group_name: str, coa_entries: pl.Series) -> int:
     """ Creates COA group and its corresponding access and COA table entries """
 
@@ -242,8 +200,108 @@ def create_coa(session: so.Session, user_id: int, coa_group_name: str, coa_entri
 
 def delete_s3_object(s3_client: S3Client, s3_object_key: str) -> None:
     try:
-        response = s3_client.delete_object(Bucket=os.getenv('BUCKET_NAME'), Key=s3_object_key)
-    except ClientError as e:
-        print(e)
+        s3_client.delete_object(Bucket=os.getenv('BUCKET_NAME'), Key=s3_object_key)
     except Exception as e:
-        print(e)
+        logger.exception("Failed to delete S3 object <{s3_object_key}>: {e}")
+
+def publish_status(redis_client, user_id: int, job_data: dict, success: bool, filename: str = None, error: str = None):
+    """Helper to publish job status """
+    payload = {**job_data, "success": success}
+    if error:
+        payload["error"] = error
+    if filename:
+        payload["filename"] = filename
+    redis_client.publish(f"user:{user_id}", json.dumps(payload))
+
+def compress_dataframe(df: pl.DataFrame):
+    """ Writes polars dataframe to parquet buffer """
+    parquet_buffer = io.BytesIO()
+    df.write_parquet(parquet_buffer, compression="zstd")
+    parquet_bytes = parquet_buffer.getvalue()
+    
+    return parquet_bytes
+
+def cleanup_tempfiles(paths: str | list[str]) -> None:
+    """
+    Safely delete temporary files. 
+    
+    Silently ignores missing files. Logs warnings for permission errors.
+    Designed for use in finally blocks where failures shouldn't raise.
+    
+    Args:
+        paths: Single file path or list of paths
+    """
+    if not paths:
+        return
+
+    # Normalize to list
+    path_list = [paths] if isinstance(paths, str) else paths
+
+    # Validate input type
+    if not isinstance(path_list, list):
+        return
+
+    for path in path_list:
+        if not isinstance(path, str):
+            continue
+
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except (PermissionError, OSError) as e:
+            logger.warning(f"Could not delete {path}: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error deleting {path}", exc_info=True)
+
+def normalize_text(df: pl.DataFrame) -> pl.DataFrame:
+    """
+  
+    """
+
+    df = df.with_columns([
+        pl.col("description")
+        .fill_null("")
+
+        # Lowercase
+        .str.to_lowercase()
+        
+        # Remove double quotes
+        .str.replace_all('"', '')
+        
+        # Replace HTML breaks
+        .str.replace_all('<br />', ' ')
+        
+        # Remove punctuation (chained replacements)
+        .str.replace_all("'", "")
+        .str.replace_all(r'\.',  "")  # Escape dot
+        .str.replace_all(",", "")
+        .str.replace_all(r'\(', "")  # Escape parenthesis
+        .str.replace_all(r'\)', "")
+        .str.replace_all("!", "")
+        .str.replace_all(r'\?', "")  # Escape question mark
+        
+        # Replace semicolons and colons with spaces
+        .str.replace_all(";", " ")
+        .str.replace_all(":", " ")
+        
+        # Custom preprocessing
+        .str.replace_all(NOISE_PATTERN, ' ')
+
+        # Squeeze multiple spaces
+        .str.replace_all(r'\s+', ' ')
+
+        # Strip whitespace
+        .str.strip_chars()
+        .alias("normalized_description"),
+
+        # Account cleaning
+        pl.col("account")
+        .fill_null("unknown")
+        .str.to_lowercase()
+        .str.replace_all(r'[^\w\s]', '')
+        .str.replace_all(r'\s+', '-')
+        # .str.to_titlecase()
+        .alias("account"),
+    ])
+
+    return df
