@@ -5,7 +5,7 @@ import fasttext
 import numpy as np
 import polars as pl
 import networkx as nx
-from fastapi import UploadFile
+from fastapi import UploadFile, HTTPException
 from datasketch import MinHash, MinHashLSH
 from app.dependencies import UPLOAD_EXTENSIONS, logger
 from botocore.exceptions import ClientError
@@ -15,6 +15,8 @@ from mypy_boto3_s3.client import S3Client
 import json
 import io
 import app.models.database_models as db_models
+import sqlalchemy as sa
+import random
 
 PAYMENT_TERMS = [
     r"\b(?:re|e)?pay(?:ment|mt|mnt)?s?\b",
@@ -119,7 +121,7 @@ def group(descriptions: pl.Series, table_height: int):
 
 def classify(
     descriptions: pl.Series, 
-    model: fasttext.FastText
+    model: fasttext.FastText,
 ):
     """Predicts the vendors and chart of accounts of given transaction(s)"""
 
@@ -147,8 +149,8 @@ def classify(
     accounts = pl.Series("account", labels)
     accounts = (
         accounts
-        .str.replace_all(r'__label__', '')
         .str.replace_all(r'_', ' ')
+        .str.replace_all(r'-', ' ')
         .str.to_titlecase()
         .str.strip_chars()
     )
@@ -161,11 +163,10 @@ def classify(
         probs >= 0.7
     ]
     choices = ["Low", "Medium", "High"]
-    confidenceGroups = np.select(conditions, choices, "None")
+    confidence_groups = np.select(conditions, choices, "None")
 
     # prepare new columns
-    prediction_confidence = pl.Series("prediction_confidence", confidenceGroups)
-    #simplified_descriptions = pl.Series("simplified_descriptions", descriptions)
+    prediction_confidence = pl.Series("prediction_confidence", confidence_groups)
     groups = group(simplified_descriptions, simplified_descriptions.len())
    
     return accounts, prediction_confidence, simplified_descriptions.alias("simplified_descriptions"), groups
@@ -191,7 +192,7 @@ def create_coa(session: so.Session, user_id: int, coa_group_name: str, coa_entri
     # populate COA table with group's items
     coa_items = [
         db_models.COA(group_id=coa_group_id, account=account) 
-        for account in coa_entries.unique().str.replace_all(r'[^\w\s]', '').str.replace_all(r'\s+', ' ').str.to_titlecase().to_list()
+        for account in coa_entries.unique().str.replace_all(r'[^\w\s]', '').str.replace_all(r'\s+', ' ').str.to_lowercase().to_list()
     ]
 
     session.add_all(coa_items)
@@ -257,7 +258,6 @@ def normalize_text(df: pl.DataFrame) -> pl.DataFrame:
     """
   
     """
-
     df = df.with_columns([
         pl.col("description")
         .fill_null("")
@@ -305,3 +305,171 @@ def normalize_text(df: pl.DataFrame) -> pl.DataFrame:
     ])
 
     return df
+
+def verify_coa_access(
+    session: so.Session,
+    user_id: db_models.User,
+    coa_group_id: int
+) -> None:
+    coa_group_access = session.scalar(
+        sa.select(sa.exists())
+        .where(
+            db_models.UserCOAAccess.user_id == user_id,
+            db_models.UserCOAAccess.group_id == coa_group_id
+        )
+    )
+
+    if not coa_group_access:
+        raise HTTPException(status_code=403, detail="Access denied to coa")
+
+def verify_template_access(
+    session: so.Session,
+    user: db_models.User,
+    template_id: int
+) -> db_models.Template:
+    """Verify user can access template, return template object."""
+    template_access = session.scalar(
+        sa.select(sa.exists())
+        .where(
+            sa.and_(
+                db_models.UserTemplateAccess.user_id == user.id,
+                db_models.UserTemplateAccess.template_id == template_id,
+            )
+        )
+    )
+
+    if not template_access:
+        raise HTTPException(status_code=403, detail="Access denied to template")
+
+    template = session.get(db_models.Template, template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    return template
+
+def verify_mapping_access(
+    session: so.Session,
+    user_id: int,
+    template_id: int,
+    mapping_group_id: int
+) -> db_models.Template:
+    """Verify user access to mapping."""
+    mapping_access = session.scalar(
+        sa.select(sa.exists())
+        .where(
+            sa.and_(
+                db_models.TemplateCOAMappingGroup.id == mapping_group_id,
+                db_models.TemplateCOAMappingGroup.user_id == user_id,
+                db_models.TemplateCOAMappingGroup.template_id == template_id,
+            )
+        )
+    )
+
+    if not mapping_access:
+        raise HTTPException(status_code=403, detail="Access denied to template")
+
+    mapping_group = session.get(db_models.TemplateCOAMappingGroup, mapping_group_id)
+    if not mapping_group:
+        raise HTTPException(status_code=404, detail="Mapping not found")
+    
+    return mapping_group
+
+def translate_accounts(
+    accounts: pl.Series, 
+    session: so.Session,
+    mapping_group_id: int,
+) -> pl.Series:
+    """ Translates accounts to mappings """
+    accountsDF = (
+        accounts
+        .str.to_lowercase()
+        .to_frame()
+    )
+
+    account_translations = pl.read_database(
+        query= """
+                SELECT
+                    base_coa_id, 
+                    translated_coa_id,
+                    lower(B.account) AS account,
+                    lower(T.account) AS translation
+                FROM coa_translation
+                JOIN coa AS B ON base_coa_id = B.id
+                JOIN coa AS T ON translated_coa_id = T.id
+                WHERE mapping_group_id = :value
+        """,
+        connection=session.connection(),
+        execute_options={"parameters": {"value": mapping_group_id}}
+    )
+        
+    merged_accounts_to_translations = accountsDF.join(
+        account_translations, 
+        on='account',
+        how='left', 
+        maintain_order='left',
+        coalesce=True
+    )
+
+    merged_accounts_to_translations = merged_accounts_to_translations.with_columns(
+        pl.when(pl.col("translation").is_not_null())
+        .then(pl.col("translation"))
+        .otherwise(pl.col("account"))
+        .alias("account")
+    )
+
+    result = merged_accounts_to_translations.select(
+        pl.col("translated_coa_id"), 
+        pl.col("account")
+    )
+
+    return result
+
+def get_account_options(session: so.Session, coa_group_id: int, mapping_group_id: int = 0):
+    """ Retrieves coa select options for classified transaction tables """
+    options_df =  pl.read_database(
+        query= """
+                SELECT id, account
+                FROM coa
+                WHERE group_id = :value
+        """,
+        connection=session.connection(),
+        execute_options={"parameters": {"value": coa_group_id}}
+    )
+
+    if not mapping_group_id:
+        options_df = (
+            options_df.with_columns(
+                pl.col("account").str.split(" ")
+                .list.eval(pl.element().str.to_titlecase())
+                .list.join(" ")
+            )
+            .sort("account")
+            .to_dicts() 
+        )
+        return options_df
+
+    # replace accounts of base coa with their translations under specified mapping
+    # accounts without translations are kept
+    mixed_options = (
+        translate_accounts(options_df['account'], session, mapping_group_id)
+        .join(options_df,on='account', how='left', maintain_order='left', coalesce=True)
+        .select(
+            id=pl.coalesce("translated_coa_id", "id"), 
+            account=(
+                pl.col("account")
+                .str.split(" ")
+                .list.eval(pl.element().str.to_titlecase())
+                .list.join(" ")
+            ),
+        )
+        .unique()
+        .sort("account")
+    )
+
+    return mixed_options.to_dicts()
+
+def get_valid_coa_ids(session: so.Session, coa_group_id: int):
+    return set(session.scalars(
+        sa.select(db_models.COA.id)
+        .where(db_models.COA.group_id == coa_group_id)
+    ))

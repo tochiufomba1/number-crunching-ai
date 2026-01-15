@@ -1,5 +1,7 @@
 import os
 import io
+import json
+import uuid
 import boto3
 import secrets
 import tempfile
@@ -9,13 +11,9 @@ import polars as pl
 import sqlalchemy.orm as so
 import app.models.app_models as app_models
 import app.models.database_models as db_models
-from typing import Annotated
-from fastapi import UploadFile, Depends, HTTPException, BackgroundTasks
 from mypy_boto3_s3.client import S3Client
 from app.dependencies import Session, get_s3_client, get_redis_connection, logger
 from botocore.exceptions import ClientError
-import json
-import uuid
 
 FASTTEXT_LEARNING_RATE = 0.1
 FASTTEXT_EPOCH = 5
@@ -46,7 +44,7 @@ def create_coa(
                 #app.helpers.publish_status(redis_client, user_id, channel_data, False, error=f"Missing required columns: {', '.join(missing_columns)}")
                 return
 
-            data = lf.select(pl.col("account")).collect()
+            data = lf.select(pl.col("account").str.to_lowercase()).collect()
 
             if data.is_empty():
                 #app.helpers.publish_status(redis_client, user_id, channel_data, False, error=COA file is empty")
@@ -109,7 +107,7 @@ def create_template(
         return
 
     data = app.helpers.normalize_text(data)
-
+    
     lines = (
         data
         .filter(
@@ -148,10 +146,10 @@ def create_template(
         # Step 2: Create new COA group (if needed) 
         coa_group_id = template_info.coa_group_id
         if coa_group_id == -1:
-            coa_group_id = app.helpers.create_coa(session, user_id, f"{template_info.title}_COA", data["account"])
+            coa_group_id = app.helpers.create_coa(session, user_id, f"{template_info.title}_COA", data["account"].str.replace_all(r'-', ' ').str.to_lowercase())
 
         # Step 3a: Create Template
-        new_template = db_models.Template(title=template_info.title, model_name=model_name, coa_group_id=coa_group_id)
+        new_template = db_models.Template(title=template_info.title, model_name=model_name, base_coa_group=coa_group_id)
         session.add(new_template)
         session.flush()
 
@@ -169,6 +167,7 @@ def process_transactions_task(
     model_name: str,
     access_token: str,
     job_id: str,
+    mapping_group_id: int,
 ):
     """
     Classifies transactions from the specified S3 object and saves the results
@@ -220,20 +219,20 @@ def process_transactions_task(
         model = fasttext.load_model(model_file_path)
 
         # Classify transactions
-        descriptions = data['description']
-        account, prediction_confidence, simplified_descriptions, group = app.helpers.classify(descriptions, model)
-        data = data.with_columns([account, prediction_confidence, simplified_descriptions,group]) # add additional account field
+        account, prediction_confidence, simplified_descriptions, group = app.helpers.classify(data['description'], model)
+        
+        if mapping_group_id:
+            with Session() as session:
+                account = app.helpers.translate_accounts(account, session, mapping_group_id)['account'].str.to_titlecase()
 
-        # Compress dataframe for redis session storage
-        parquet_buffer = io.BytesIO()
-        data.write_parquet(parquet_buffer, compression="zstd")
-        parquet_bytes = parquet_buffer.getvalue()
+        data = data.with_columns([account, prediction_confidence, simplified_descriptions, group, ]) # add additional account field (pl.col("account").alias("initial_account"))
 
         # Create session
         pipe = redis_client.pipeline()
         pipe.hset(f'user-session:{access_token}', mapping={
             "template_id": template_id,
-            "data": parquet_bytes
+            "mapping_group_id": mapping_group_id,
+            "data": app.helpers.compress_dataframe(data)
         })
         redis_client.expire(f'user-session:{access_token}', 10800) # 3 hours
         pipe.execute()
@@ -272,24 +271,24 @@ def create_export_file(
 
     # Collect relevant table data for export
     lf_columns = set(lf.collect_schema().names())
-    export_columns = list(lf_columns - {"amount_right", "simplified_descriptions"})
+    export_columns = list(lf_columns - {"amount_right", "initial_account" "simplified_descriptions"})
     data = lf.select(export_columns).collect()
 
-    # Write table data to specified file format
-    file_ext = "." + export_type
-    fd, export_file_path = tempfile.mkstemp(suffix=file_ext)
-    with os.fdopen(fd, 'wb') as fp:
-        match export_type:
-            case "xlsx":
-                data.write_excel(workbook=fp)
-            case "csv":
-                data.write_csv(fp)
-            case "_":
-                app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Unsupported file export type provided")
-                return
-
-    # Upload to S3 and notify user of result            
     try:
+        # Write table data to specified file format
+        file_ext = "." + export_type
+        fd, export_file_path = tempfile.mkstemp(suffix=file_ext)
+        with os.fdopen(fd, 'wb') as fp:
+            match export_type:
+                case "xlsx":
+                    data.write_excel(workbook=fp)
+                case "csv":
+                    data.write_csv(fp)
+                case "_":
+                    app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Unsupported file export type provided")
+                    return
+
+        # Upload to S3 and notify user of result            
         filename = os.path.basename(export_file_path)
         s3_client.upload_file(export_file_path, os.getenv("BUCKET_NAME"), filename)
     except ClientError as e:
@@ -299,7 +298,3 @@ def create_export_file(
         app.helpers.publish_status(redis_client, user_id, channel_data, True, filename=filename)
     finally:
         app.helpers.cleanup_tempfiles(export_file_path)
-    
-
-    
-    

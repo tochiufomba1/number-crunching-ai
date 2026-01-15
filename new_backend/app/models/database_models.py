@@ -100,6 +100,16 @@ class COA(Base):
     def __repr__(self):
         return '<COA {}>'.format(self.account)
 
+class COAExtension(Base):
+    __tablename__ = "coa_extension"
+
+    user_id: so.Mapped[int] = so.mapped_column(sa.ForeignKey(User.id), primary_key=True, index=True)
+    coa_group: so.Mapped[int] = so.mapped_column(sa.ForeignKey(COAIDtoGroup.group_id), primary_key=True, index=True)
+    account: so.Mapped[str] = so.mapped_column(sa.String(256))
+
+    def __repr__(self):
+        return '<COAExtension {}>'.format(self.account)
+
 class UserCOAAccess(Base):
     __tablename__ = "user_coa_access"
 
@@ -116,7 +126,7 @@ class Template(Base):
     id: so.Mapped[int] = so.mapped_column(primary_key=True, index=True)
     title: so.Mapped[str] = so.mapped_column(sa.String(256))
     model_name: so.Mapped[str] = so.mapped_column(sa.String(256), unique=True)
-    coa_group_id: so.Mapped[int] = so.mapped_column(sa.ForeignKey(COAIDtoGroup.group_id), index=True)
+    base_coa_group: so.Mapped[int] = so.mapped_column(sa.ForeignKey(COAIDtoGroup.group_id))
     published: so.Mapped[datetime | None] = so.mapped_column(
         DateTime(timezone=True),
         nullable=True
@@ -163,28 +173,34 @@ class Transaction(Base):
     def __repr__(self):
         return '<Transaction {}>'.format(self.description)
 
-class Vendor(Base):
-    __tablename__ = "vendor"
+class TemplateCOAMappingGroup(Base):
+    __tablename__ = "template_coa_mapping_group"
 
     id: so.Mapped[int] = so.mapped_column(primary_key=True)
-    vendor: so.Mapped[str] = so.mapped_column(sa.String(256))
-    transaction_descr: so.Mapped[str] = so.mapped_column(sa.String(500))
-    template_id: so.Mapped[int] = so.mapped_column(sa.ForeignKey(Template.id), index=True)
+    template_id: so.Mapped[int] = so.mapped_column(sa.ForeignKey(Template.id, ondelete="RESTRICT"), index=True)
+    coa_group_id: so.Mapped[int] = so.mapped_column(sa.ForeignKey(COAIDtoGroup.group_id), index=True)
+    user_id: so.Mapped[int] = so.mapped_column(sa.ForeignKey("user.id",  ondelete="CASCADE"), index=True)
+    name: so.Mapped[str] = so.mapped_column(sa.String(200))
 
-    def __repr__(self):
-        return '<Vendor {}>'.format(self.vendor)
+    __table_args__ = (
+        sa.UniqueConstraint('template_id', 'user_id', 'coa_group_id', 'name', name='uq_template_user_coa_mapping'),
+    )
 
-class NewVendorRequest(Base):
-    __tablename__ = "new_vendor_request"
+class COATranslation(Base):
+    __tablename__ = "coa_translation"
 
-    id: so.Mapped[int] = so.mapped_column(primary_key=True)
-    transaction_descr: so.Mapped[str] = so.mapped_column(sa.String(500))
-    proposed_vendor: so.Mapped[str] = so.mapped_column(sa.String(256))
-    user_id: so.Mapped[int] = so.mapped_column(sa.ForeignKey(User.id), index=True)
+    mapping_group_id: so.Mapped[int] = so.mapped_column(sa.ForeignKey(TemplateCOAMappingGroup.id, ondelete="CASCADE"), primary_key=True, index=True)
+    base_coa_id: so.Mapped[int] = so.mapped_column(sa.ForeignKey(COA.id), primary_key=True)
+    translated_coa_id: so.Mapped[int] = so.mapped_column(sa.ForeignKey(COA.id), index=True)
 
-    def __repr__(self):
-        return f"<NewVendorRequests {self.id}>"
+    __table_args__ = (
+        sa.CheckConstraint(
+            'base_coa_id != translated_coa_id',
+            name='check_no_self_mapping'
+        ),
+    )
 
+# account_translation: so.Mapped[str] = so.mapped_column(sa.String(200))
 # class MarketplaceTemplate(Base):
 #     template_id: so.Mapped[int] = so.Mapped_column(sa.ForeignKey(Template.id), index=True, primary_key=True)
 #     rating: so.Mapped[float] = so.Mapped_column()

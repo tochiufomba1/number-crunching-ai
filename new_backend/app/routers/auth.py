@@ -2,7 +2,7 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, status, Form, APIRouter, Body
 import app.models.app_models as app_models
 import app.models.database_models as db_models
-from app.dependencies import get_session, current_user
+from app.dependencies import get_session, current_user, logger
 import sqlalchemy as sa
 import argon2
 import secrets
@@ -16,23 +16,39 @@ router = APIRouter(
 ph = argon2.PasswordHasher()
 
 @router.post("/users")
-def register_new_user(data: app_models.LocalUser, session: Annotated[so.Session, Depends(get_session)]):
+def register_new_user(
+    data: app_models.LocalUserRegistration, 
+    session: Annotated[so.Session, Depends(get_session)],
+):
     # check if requester already has an account    
     if session.scalars(sa.select(db_models.User).where(db_models.User.email == data.email)).first():
-        raise HTTPException(
-            status_code=400, 
-            detail="Unsuccessful registration"
-        )
+        raise HTTPException(status_code=400, detail="Registration failed.")
         
     # create new user
     pwhash = ph.hash(data.password)
-    new_user = db_models.User(name=data.name, email=data.email, image="default_image")
+    new_user = db_models.User(name=data.name, email=data.email, image="default_image.png")
     session.add(new_user)
-    session.flush() # Review
+    session.flush()
     new_user_account = db_models.Account(user_id=new_user.id, provider="local", provider_type="local", password_hash=pwhash)
     session.add(new_user_account)
-    session.commit()
 
+    # grant access to generic template and coa
+    generic_template_id = session.scalar(
+        sa.select(db_models.Template.id)
+        .where(db_models.Template.model_name == "generic.bin")
+    )
+
+    generic_coa_id = session.scalar(
+        sa.select(db_models.COAIDtoGroup.group_id)
+        .where(db_models.COAIDtoGroup.group_name == "Generic_COA")
+    )
+
+    generic_template_access = db_models.UserTemplateAccess(template_id=generic_template_id, user_id=new_user.id, access_level='user')
+    generic_coa_access = db_models.UserCOAAccess(group_id=generic_coa_id,user_id=new_user.id, access_level='user')
+    session.add_all([generic_template_access, generic_coa_access])
+    
+    session.commit()
+    logger.info(f"New user registered: {new_user.id}, email: {data.email}")
     return {"message": "successfully created user"}
 
 # get authorization code, exchange for access and refresh tokens
@@ -109,9 +125,3 @@ def authenticate_user(
     session.commit()
 
     return {"id": str(user_account.user_id), "access_token": user_account.access_token , "access_exp": int(user_account.access_expiration.timestamp())} #TODO
-
-
-
-
-
-        

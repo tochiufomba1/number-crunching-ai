@@ -18,7 +18,7 @@ with Session() as session:
             pl.scan_csv(filepath)
             .select(
                 pl.col("description"),
-                pl.col("account"),
+                pl.col("account").str.to_lowercase(),
                 pl.lit(0).alias("amount")
             )
             .collect()
@@ -56,7 +56,7 @@ with Session() as session:
         session.add_all(coa_items)
 
         # Create generic starter template
-        new_template = db_models.Template(title="Generic", model_name="generic.bin", coa_group_id=coa_group.group_id)
+        new_template = db_models.Template(title="Generic", model_name="generic.bin", base_coa_group=coa_group.group_id)
         session.add(new_template)
         session.flush()
 

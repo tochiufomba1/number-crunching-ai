@@ -1,7 +1,7 @@
 import { createColumnHelper } from "@tanstack/react-table"
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
-import { ItemizedRecord, SummaryRecord } from "./definitions"
+import { ItemizedRecord, MappingRecord, SummaryRecord } from "./definitions"
 import { TableCell } from "@/components/table/TableCell"
 import { EditCell } from "@/components/table/EditCell"
 
@@ -73,6 +73,37 @@ export function getColumns(tableType: string, selectOptions: any[]) {
       }),
       columnHelper.accessor('account', {
         cell: TableCell,
+        meta: {
+          type: "search",
+          options: selectOptions,
+        }
+      }),
+      columnHelper.display({
+        id: "edit",
+        cell: EditCell 
+      }),
+    ]
+  }
+
+  else if(tableType == 'mapping'){
+    const columnHelper = createColumnHelper<MappingRecord>()
+    columns = [
+      // columnHelper.accessor('id', {
+      //   cell: TableCell,
+      //   meta: {
+      //     type: "text",
+      //   }
+      // }),
+      columnHelper.accessor('base_account', {
+        cell: TableCell,
+        header: 'Original Account',
+        meta: {
+          type: "text",
+        }
+      }),
+      columnHelper.accessor('translated_account', {
+        cell: TableCell,
+        header: 'Translated Account',
         meta: {
           type: "search",
           options: selectOptions,

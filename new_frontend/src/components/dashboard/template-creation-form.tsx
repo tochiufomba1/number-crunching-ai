@@ -1,7 +1,6 @@
-"use client"
-
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "../ui/card";
+'use client'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Button } from "../ui/button";
@@ -11,11 +10,10 @@ import { Separator } from "../ui/separator";
 import { createTemplate } from "@/lib/actions";
 
 export default function TemplateCreationForm({ userID }: { userID: string }) {
-    // const { templates, isLoading, isError } = useTemplate(userID)
     const [message, formAction, isPending] = useActionState(createTemplate, null)
 
     return (
-        <Card className="w-full max-w-sm">
+        <Card className="w-full">
             <CardHeader>
                 <CardTitle>Create New Template</CardTitle>
             </CardHeader>

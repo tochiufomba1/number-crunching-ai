@@ -1,19 +1,18 @@
-"use server"
-import RegisterForm from "@/components/auth/register-form"
-import { LoginSchema, RegisterSchema } from "@/schemas"
+'use server'
+import { CreateMappingRequestSchema, LoginSchema, RegisterSchema } from "@/schemas"
 import * as z from "zod"
 import { auth, signIn } from "../../auth"
 import { DEFAULT_LOGIN_REDIRECT } from "../../routes"
 import { AuthError } from "next-auth"
-import { redirect } from "next/navigation"
+import { MappingRecord } from "./definitions"
 
 export async function getCurrentUser() {
     const session = await auth();
 
     return session?.user
 }
+
 export const login = async (values: z.infer<typeof LoginSchema>) => {
-    // replace with api call
     const validatedFields = LoginSchema.safeParse(values)
 
     if (!validatedFields.success) {
@@ -23,7 +22,6 @@ export const login = async (values: z.infer<typeof LoginSchema>) => {
     const { email, password } = validatedFields.data
 
     try {
-        console.log("email: " + email)
         await signIn("credentials", {
             email,
             password,
@@ -98,24 +96,24 @@ export async function createTemplate(previousState: string | null, formData: For
     }
 }
 
-export const uploadTransactions = async (previousState: any | null, formData: FormData) => {
-    const session = await auth()
-    if (!session) {
-        return {error: "You are not signed in"}
+export const uploadTransactions = async (formData: FormData) => {
+    const user = await getCurrentUser()
+    if (!user) {
+        return { error: "You are not signed in" }
     }
 
     const res = await fetch(`${process.env.EXTERNAL_API}/api/users/transactions`,
         {
             method: 'POST',
             headers: {
-                'Authorization': `Bearer ${session.user.access_token}`
+                'Authorization': `Bearer ${user.access_token}`
             },
             body: formData
         }
     )
 
     if (!res.ok) {
-        return {error: "Error occured"}
+        return { error: "Error occured" }
     }
 
     const jobID = await res.json();
@@ -140,19 +138,6 @@ export const uploadCOA = async (formData: FormData) => {
     }
 }
 
-export async function addToCart(prevState: string | null, queryData: FormData) {
-    const itemID = queryData.get('itemID');
-    if (itemID === "1") {
-        return "Added to cart";
-    } else {
-        // Add a fake delay to make waiting noticeable.
-        await new Promise(resolve => {
-            setTimeout(resolve, 2000);
-        });
-        return "Couldn't add to cart: the item is sold out.";
-    }
-}
-
 export async function exportRequest(exportType: string) {
     const user = await getCurrentUser()
 
@@ -166,49 +151,84 @@ export async function exportRequest(exportType: string) {
         }
     });
 
-    if(!res.ok){
-        return {error: "Server error. Try again..."}
+    if (!res.ok) {
+        return { error: "Server error. Try again..." }
     }
 
     const jobID = await res.json()
     return jobID;
 }
 
-// https://blog.logrocket.com/programmatically-downloading-files-browser/
-// https://stackoverflow.com/questions/50694881/how-to-download-file-in-react-js
-export async function fileFetcher(file: string) {
-    const user = await getCurrentUser()
+export async function fetcher(url: string,) {
+    const user = await getCurrentUser();
 
-    if (!user) {
-        throw new Error("Not signed in")
+    const req = await fetch(`${process.env.EXTERNAL_API}/${url}`,
+        {
+            headers: {
+                'Authorization': `Bearer ${user?.access_token}`
+            },
+        }
+    )
+
+    if (!req.ok)
+        throw new Error('Failed to fetch account options')
+
+    const res = await req.json()
+
+    return res
+}
+
+export const createMapping = async (values: z.infer<typeof CreateMappingRequestSchema>) => {
+    const validatedFields = CreateMappingRequestSchema.safeParse(values)
+    if (!validatedFields.success) {
+        return { error: z.prettifyError(validatedFields.error) }
+    }
+    const { templateID, mappingName, translationCOAGroupID, translations } = validatedFields.data
+
+    const user = await getCurrentUser()
+    const res = await fetch(`${process.env.EXTERNAL_API}/api/users/mappings`,
+        {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${user?.access_token}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                template_id: templateID,
+                mapping_name: mappingName,
+                coa_group_id: translationCOAGroupID,
+                translations: translations
+            })
+        }
+    )
+
+    if (!res.ok) {
+        const q = await res.json()
+        return { error: "failed" }
     }
 
-    fetch(`${process.env.EXTERNAL_API}/api/users/${user.id}/documents/${file}`, {
+    return { success: "success" }
+}
+
+export async function updateMapping(mappingID: number, data: MappingRecord) {
+    const user = await getCurrentUser()
+
+    if (!user)
+        return {message: "You are not signed in"}
+
+    const response = await fetch(`${process.env.EXTERNAL_API}/api/users${user.id}/mappings/${mappingID}/${data.base_coa_id}`, {
+        method: 'PUT',
         headers: {
-            "Authorization": `Bearer ${user.access_token}`
-        }
-    })
-        .then((response) => response.blob())
-        .then((fileObject) => {
-            const objectURL = URL.createObjectURL(fileObject)
-            const link = document.createElement('a');
-            link.href = objectURL;
-            link.download = file || 'download'
-
-            // Append to html link element page
-            //document.body.appendChild(link);
-
-            const clickHandler = () => {
-                setTimeout(() => {
-                    URL.revokeObjectURL(objectURL);
-                    removeEventListener('click', clickHandler);
-                }, 150);
-            };
-
-            link.addEventListener('click', clickHandler, false);
-
-            link.click();
-
-            return
+                'Authorization': `Bearer ${user.access_token}`,
+                "Content-Type": "application/json"
+            },
+        body: JSON.stringify({
+            "translated_coa_id": data.translated_coa_id,
         })
+    })
+
+    if(!response.ok)
+        return {message: "Update failed"}
+    
+    return {message: "Mapping was succesfully updated!"}
 }

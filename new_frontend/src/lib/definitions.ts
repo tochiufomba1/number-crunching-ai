@@ -14,7 +14,7 @@ export type Template = {
     // author: string;
     title: string;
     // shared: Shared[];
-    // coa_group: string;
+    base_coa_group: number;
 }
 
 export type User = {
@@ -43,15 +43,15 @@ export type SummaryRecord = {
     group: number
 }
 
-export type UnresolvedRecord = {
-    id: number;
-    description: string;
-    vendor: string;
-    group: number;
+export interface MappingRecord {
+    base_coa_id: number
+    base_account?: number
+    translated_account: string
+    translated_coa_id: number
 }
 
 export type Option = {
-    label: string;
+    label: string | number;
     value: string;
 };
 
@@ -70,6 +70,17 @@ export type Message = {
 export interface JobStatus {
     success: boolean
     job_type: string
-    filename?: string
-    error?: string
+    filename: string | null
+    error: string | null
+}
+
+export interface Account {
+    id: number
+    account: string
+}
+
+export interface MappingCollectionItem { 
+    id: number, 
+    name: string, 
+    coa_group_id: number 
 }

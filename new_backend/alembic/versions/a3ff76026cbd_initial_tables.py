@@ -1,8 +1,8 @@
 """initial tables
 
-Revision ID: 44f443b54011
+Revision ID: a3ff76026cbd
 Revises: 
-Create Date: 2025-10-11 21:59:20.211599
+Create Date: 2025-12-15 11:58:12.593890
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '44f443b54011'
+revision: str = 'a3ff76026cbd'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -60,27 +60,27 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_coa_group_id'), 'coa', ['group_id'], unique=False)
-    op.create_table('new_vendor_request',
-    sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('transaction_descr', sa.String(length=500), nullable=False),
-    sa.Column('proposed_vendor', sa.String(length=256), nullable=False),
+    op.create_table('coa_extension',
     sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('coa_group', sa.Integer(), nullable=False),
+    sa.Column('account', sa.String(length=256), nullable=False),
+    sa.ForeignKeyConstraint(['coa_group'], ['coa_id_group.group_id'], ),
     sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.PrimaryKeyConstraint('user_id', 'coa_group')
     )
-    op.create_index(op.f('ix_new_vendor_request_user_id'), 'new_vendor_request', ['user_id'], unique=False)
+    op.create_index(op.f('ix_coa_extension_coa_group'), 'coa_extension', ['coa_group'], unique=False)
+    op.create_index(op.f('ix_coa_extension_user_id'), 'coa_extension', ['user_id'], unique=False)
     op.create_table('template',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('title', sa.String(length=256), nullable=False),
     sa.Column('model_name', sa.String(length=256), nullable=False),
-    sa.Column('coa_group_id', sa.Integer(), nullable=False),
+    sa.Column('base_coa_group', sa.Integer(), nullable=False),
     sa.Column('published', sa.DateTime(timezone=True), nullable=True),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
-    sa.ForeignKeyConstraint(['coa_group_id'], ['coa_id_group.group_id'], ),
+    sa.ForeignKeyConstraint(['base_coa_group'], ['coa_id_group.group_id'], ),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('model_name')
     )
-    op.create_index(op.f('ix_template_coa_group_id'), 'template', ['coa_group_id'], unique=False)
     op.create_index(op.f('ix_template_id'), 'template', ['id'], unique=False)
     op.create_table('user_coa_access',
     sa.Column('user_id', sa.Integer(), nullable=False),
@@ -92,6 +92,21 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_user_coa_access_group_id'), 'user_coa_access', ['group_id'], unique=False)
     op.create_index(op.f('ix_user_coa_access_user_id'), 'user_coa_access', ['user_id'], unique=False)
+    op.create_table('template_coa_mapping_group',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('template_id', sa.Integer(), nullable=False),
+    sa.Column('coa_group_id', sa.Integer(), nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('name', sa.String(length=200), nullable=False),
+    sa.ForeignKeyConstraint(['coa_group_id'], ['coa_id_group.group_id'], ),
+    sa.ForeignKeyConstraint(['template_id'], ['template.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['user_id'], ['user.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('template_id', 'user_id', 'coa_group_id', 'name', name='uq_template_user_coa_mapping')
+    )
+    op.create_index(op.f('ix_template_coa_mapping_group_coa_group_id'), 'template_coa_mapping_group', ['coa_group_id'], unique=False)
+    op.create_index(op.f('ix_template_coa_mapping_group_template_id'), 'template_coa_mapping_group', ['template_id'], unique=False)
+    op.create_index(op.f('ix_template_coa_mapping_group_user_id'), 'template_coa_mapping_group', ['user_id'], unique=False)
     op.create_table('transaction',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('description', sa.String(length=500), nullable=False),
@@ -110,34 +125,42 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
     sa.PrimaryKeyConstraint('template_id', 'user_id')
     )
-    op.create_table('vendor',
-    sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('vendor', sa.String(length=256), nullable=False),
-    sa.Column('transaction_descr', sa.String(length=500), nullable=False),
-    sa.Column('template_id', sa.Integer(), nullable=False),
-    sa.ForeignKeyConstraint(['template_id'], ['template.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    op.create_table('coa_translation',
+    sa.Column('mapping_group_id', sa.Integer(), nullable=False),
+    sa.Column('base_coa_id', sa.Integer(), nullable=False),
+    sa.Column('translated_coa_id', sa.Integer(), nullable=False),
+    sa.CheckConstraint('base_coa_id != translated_coa_id', name='check_no_self_mapping'),
+    sa.ForeignKeyConstraint(['base_coa_id'], ['coa.id'], ),
+    sa.ForeignKeyConstraint(['mapping_group_id'], ['template_coa_mapping_group.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['translated_coa_id'], ['coa.id'], ),
+    sa.PrimaryKeyConstraint('mapping_group_id', 'base_coa_id')
     )
-    op.create_index(op.f('ix_vendor_template_id'), 'vendor', ['template_id'], unique=False)
+    op.create_index(op.f('ix_coa_translation_mapping_group_id'), 'coa_translation', ['mapping_group_id'], unique=False)
+    op.create_index(op.f('ix_coa_translation_translated_coa_id'), 'coa_translation', ['translated_coa_id'], unique=False)
     # ### end Alembic commands ###
 
 
 def downgrade() -> None:
     """Downgrade schema."""
     # ### commands auto generated by Alembic - please adjust! ###
-    op.drop_index(op.f('ix_vendor_template_id'), table_name='vendor')
-    op.drop_table('vendor')
+    op.drop_index(op.f('ix_coa_translation_translated_coa_id'), table_name='coa_translation')
+    op.drop_index(op.f('ix_coa_translation_mapping_group_id'), table_name='coa_translation')
+    op.drop_table('coa_translation')
     op.drop_table('user_template_access')
     op.drop_index(op.f('ix_transaction_template_id'), table_name='transaction')
     op.drop_table('transaction')
+    op.drop_index(op.f('ix_template_coa_mapping_group_user_id'), table_name='template_coa_mapping_group')
+    op.drop_index(op.f('ix_template_coa_mapping_group_template_id'), table_name='template_coa_mapping_group')
+    op.drop_index(op.f('ix_template_coa_mapping_group_coa_group_id'), table_name='template_coa_mapping_group')
+    op.drop_table('template_coa_mapping_group')
     op.drop_index(op.f('ix_user_coa_access_user_id'), table_name='user_coa_access')
     op.drop_index(op.f('ix_user_coa_access_group_id'), table_name='user_coa_access')
     op.drop_table('user_coa_access')
     op.drop_index(op.f('ix_template_id'), table_name='template')
-    op.drop_index(op.f('ix_template_coa_group_id'), table_name='template')
     op.drop_table('template')
-    op.drop_index(op.f('ix_new_vendor_request_user_id'), table_name='new_vendor_request')
-    op.drop_table('new_vendor_request')
+    op.drop_index(op.f('ix_coa_extension_user_id'), table_name='coa_extension')
+    op.drop_index(op.f('ix_coa_extension_coa_group'), table_name='coa_extension')
+    op.drop_table('coa_extension')
     op.drop_index(op.f('ix_coa_group_id'), table_name='coa')
     op.drop_table('coa')
     op.drop_index(op.f('ix_account_user_id'), table_name='account')
