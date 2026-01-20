@@ -75,7 +75,7 @@ export const register = async (values: z.infer<typeof RegisterSchema>) => {
     return { success: "Account successfully created! Please log in." }
 }
 
-export async function createTemplate(previousState: string | null, formData: FormData) {
+export async function createTemplate(formData: FormData) {
     const user = await getCurrentUser()
 
     const res = await fetch(`${process.env.EXTERNAL_API}/api/users/${user!.id}/templates`,
@@ -88,12 +88,11 @@ export async function createTemplate(previousState: string | null, formData: For
         }
     )
 
-    if (!res.ok) {
-        return "Error"
-    }
-    else {
-        return "Success"
-    }
+    if (!res.ok)
+        return {error: "Error encountered when creating template"}
+
+    const jobID = await res.json()
+    return jobID
 }
 
 export const uploadTransactions = async (formData: FormData) => {
@@ -123,7 +122,7 @@ export const uploadTransactions = async (formData: FormData) => {
 export const uploadCOA = async (formData: FormData) => {
     const user = await getCurrentUser();
 
-    const req = await fetch(`${process.env.EXTERNAL_API}/api/users/${user?.id}/coa`,
+    const res = await fetch(`${process.env.EXTERNAL_API}/api/users/${user?.id}/coa`,
         {
             method: 'POST',
             headers: {
@@ -133,9 +132,12 @@ export const uploadCOA = async (formData: FormData) => {
         }
     )
 
-    if (!req.ok) {
-        throw new Error("Upload failed")
+    if (!res.ok) {
+        return {error: "Encountered an error. Please try again."}
     }
+
+    const jobID = await res.json();
+    return jobID;
 }
 
 export async function exportRequest(exportType: string) {

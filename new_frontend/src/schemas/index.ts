@@ -28,3 +28,14 @@ export const TransactionUploadSchema = z.object({
     mapping_group_id: z.coerce.number<string>(),
     transactions_file: z.file("Upload a file").mime(['text/csv'])
 })
+
+export const AddCOADialogForm = z.object({
+    coa_group_name: z.string().min(1, "Please provide a name for this chart of accounts"),
+    coa_file: z.file("Upload a file").mime(['text/csv'])
+})
+
+export const TemplateCreationFormScheama = z.object({
+    template_title: z.string().min(1, "Title must have at least one character"),
+    template_coa_group_id: z.coerce.number<string>(),
+    transactions_file: z.file("Upload a file").mime(['text/csv']),
+})

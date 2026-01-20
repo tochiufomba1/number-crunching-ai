@@ -1,4 +1,4 @@
-"use client"
+'use client'
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -11,15 +11,50 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { uploadCOA } from "@/lib/actions"
+import { AddCOADialogForm } from "@/schemas"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { Controller, useForm } from "react-hook-form"
+import z from "zod"
+import { FieldGroup, Field, FieldLabel, FieldError } from "../ui/field"
+import { convertToFormData } from "@/lib/helpers"
+import { useState } from "react"
 
-export function AddCOADialog() {
+export function AddCOADialog({
+  userID,
+  addJob,
+}: {
+  userID:string,
+  addJob: (jobID: string) => void
+}) {
+  const [open, setOpen] = useState(false);
+  const [APIFormError, setAPIFormError] = useState<any|null>(null)
 
+  const form = useForm({
+    resolver: zodResolver(AddCOADialogForm),
+    defaultValues: {
+      coa_group_name: "",
+      coa_file: undefined as any,
+    },
+  })
+
+  async function onSubmit(formValues: z.infer<typeof AddCOADialogForm>) {
+    const formData = convertToFormData(formValues)
+    const formStatus = await uploadCOA(formData)
+
+    if(formStatus.error){
+      setAPIFormError({message: formStatus.error})
+      return
+    }
+
+    addJob(formStatus.job_id)
+    setOpen(false)
+    form.reset()
+  }
 
   return (
-    <Dialog>
-      <form action={uploadCOA}>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <form id="coa_upload" onSubmit={form.handleSubmit(onSubmit)}>
         <DialogTrigger asChild>
           <Button className="w-full" variant="outline">Add new chart of accounts</Button>
         </DialogTrigger>
@@ -31,21 +66,56 @@ export function AddCOADialog() {
               done.
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4">
-            <div className="grid gap-3">
-              <Label htmlFor="name-1">COA Name</Label>
-              <Input id="name-1" name="name" placeholder="COA Name" />
-            </div>
-            <div className="grid gap-3">
-               <Label htmlFor="coa_file">File</Label>
-               <Input id="coa_file" type="file" />
-            </div>
-          </div>
+          <FieldGroup>
+            <Controller
+              name="coa_group_name"
+              control={form.control}
+              render={({ field, fieldState }) => (
+                <Field data-invalid={fieldState.invalid}>
+                  <FieldLabel htmlFor="coa_group_name">COA Name</FieldLabel>
+                  <Input
+                    {...field}
+                    id="coa_group_name"
+                    aria-invalid={fieldState.invalid}
+                  />
+                  {fieldState.invalid && (
+                    <FieldError errors={[fieldState.error]} />
+                  )}
+                </Field>
+              )}
+            />
+            <Controller
+              name="coa_file"
+              control={form.control}
+              render={({ field: { value, onChange, ...fieldProps }, fieldState }) => (
+                <Field data-invalid={fieldState.invalid}>
+                  <FieldLabel htmlFor="coa_file">
+                    Upload
+                  </FieldLabel>
+                  <Input
+                    {...fieldProps}
+                    id="coa_file"
+                    aria-invalid={fieldState.invalid}
+                    placeholder="Upload COA file here"
+                    type="file"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      onChange(file);
+                    }}
+                  />
+                  {fieldState.invalid && (
+                    <FieldError errors={[fieldState.error]} />
+                  )}
+                </Field>
+              )}
+            />
+            { APIFormError && <Field> <FieldError  errors={APIFormError}/></Field> }
+          </FieldGroup>
           <DialogFooter>
             <DialogClose asChild>
               <Button variant="outline">Cancel</Button>
             </DialogClose>
-            <Button type="submit">Upload</Button>
+            <Button type="submit" form="coa_upload">Upload</Button>
           </DialogFooter>
         </DialogContent>
       </form>

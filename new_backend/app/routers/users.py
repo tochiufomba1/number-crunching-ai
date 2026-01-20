@@ -24,7 +24,8 @@ router = APIRouter(
 
 @router.post("/{user_id}/coa")
 def create_new_chart_of_accounts(
-    coa_group_name: Annotated[int, Form()],
+    user_id: int,
+    coa_group_name: Annotated[str, Form()],
     coa_file: Annotated[UploadFile, File()],
     user: Annotated[Dict[str, Union[db_models.User, str]], Depends(current_user)],
     background_tasks: BackgroundTasks
@@ -40,8 +41,9 @@ def create_new_chart_of_accounts(
         logger.exception(f"Failed to upload coa file to S3: {e}")
         raise HTTPException(status_code=500, detail="Server error")
     else:
-        background_tasks.add_task(app.tasks.create_coa, coa_group_name, object_key, user_id)
-        return {"message": "processing..."}
+        job_id = str(uuid.uuid4())
+        background_tasks.add_task(app.tasks.create_coa, coa_group_name, object_key, user_id, job_id)
+        return {"job_id": job_id}
 
 @router.get("/{user_id}/templates")
 def get_user_templates(
@@ -97,9 +99,10 @@ def create_template(
         logger.exception(f"Error during S3 upload (function: create_template): {e}")
         raise HTTPException(status_code=500, detail="Server failure")
     else:
+        job_id = str(uuid.uuid4())
         template_info = app_models.TemplateInfo(title=template_title, coa_group_id=template_coa_group_id)
-        background_tasks.add_task(app.tasks.create_template, template_info, user_id, object_key)
-        return {"message": "Processing data"}
+        background_tasks.add_task(app.tasks.create_template, template_info, user_id, object_key, job_id)
+        return {"job_id": job_id}
 
 @router.post("/transactions")
 async def process_transactions(

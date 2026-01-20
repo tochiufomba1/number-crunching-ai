@@ -68,10 +68,11 @@ export type Message = {
 }
 
 export interface JobStatus {
+    job_id: string
     success: boolean
     job_type: string
     filename: string | null
-    error: string | null
+    message: string | null
 }
 
 export interface Account {

@@ -22,7 +22,7 @@ export default function useCOAOptions(userID: string) {
     );
 
     return {
-        coaOptions: data ?? [],
+        coaOptions: data,
         isCOAOptionsLoading: isLoading,
         isCOAOptionsError: error
     }

@@ -19,7 +19,7 @@ export default function useMessage(
 
         setIsLoading(true)
         const timeout = setTimeout(() => {
-            const jobInfo: JobStatus = { success: false, job_type: "unknown", filename: null, error: "Request timed out" }
+            const jobInfo: JobStatus = { job_id: jobID, success: false, job_type: "unknown", filename: null, message: "Request timed out" }
             onReceiveMessage(jobInfo)
         }, 60000) // 60 second timeout
 
@@ -42,6 +42,7 @@ export default function useMessage(
         if (!jobInfo) return
 
         onReceiveMessage(jobInfo)
+        setIsLoading(false)
 
     }, [messages, jobID, onReceiveMessage])
 

@@ -205,11 +205,11 @@ def delete_s3_object(s3_client: S3Client, s3_object_key: str) -> None:
     except Exception as e:
         logger.exception("Failed to delete S3 object <{s3_object_key}>: {e}")
 
-def publish_status(redis_client, user_id: int, job_data: dict, success: bool, filename: str = None, error: str = None):
+def publish_status(redis_client, user_id: int, job_data: dict, success: bool, filename: str = None, message: str = None):
     """Helper to publish job status """
     payload = {**job_data, "success": success}
-    if error:
-        payload["error"] = error
+    if message:
+        payload["message"] = message
     if filename:
         payload["filename"] = filename
     redis_client.publish(f"user:{user_id}", json.dumps(payload))

@@ -1,7 +1,7 @@
 'use client'
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import useCOAOptions from "@/hooks/useCOAOptions";
 import { Account, MappingRecord } from "@/lib/definitions";
 import useSWR from "swr";
@@ -51,9 +51,9 @@ export default function CreateMapping({ userID, templateID }: MappingCreationPro
     );
 
     // prevents self-mappings
-    const filtered_coa_options: Option[] = coaOptions.filter(
+    const filtered_coa_options: Option[] = coaOptions ? coaOptions.filter(
         (option) => option.value !== sessionStorage.getItem('templateBaseCOA')
-    )
+    ) : []
 
     async function updateRow(id: number, data: MappingRecord, tableType: string) {
         const res = accounts.find((option: Account) => (option.account === data.translated_account))
@@ -77,7 +77,7 @@ export default function CreateMapping({ userID, templateID }: MappingCreationPro
         setError(null)
 
         if (translations.size < 1) {
-            setError({message: 'You have not created any translations'})
+            setError({ message: 'You have not created any translations' })
             return
         }
 
@@ -92,7 +92,7 @@ export default function CreateMapping({ userID, templateID }: MappingCreationPro
         const res = await createMapping(mappingInfo)
 
         if (res.error) {
-            setError({message: res.error})
+            setError({ message: res.error })
             return
         }
 

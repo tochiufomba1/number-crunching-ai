@@ -1,4 +1,5 @@
 "use client"
+import { JobStatus } from "@/lib/definitions";
 import { useEffect, useRef, useState } from "react";
 import { success } from "zod";
 
@@ -31,11 +32,12 @@ const useSSE = (url: string) => {
 
         setMessages(prev => {
           const newMap = new Map(prev).set(data.job_id, {
+            job_id: data.job_id,
             success: data.success,
             job_type: data.job_type,
             filename: data.filename || null,
-            error: data.error || null,
-          })
+            message: data.message || null,
+          } as JobStatus)
           return newMap;
         }); // Append new message to the array
       } catch (err) {

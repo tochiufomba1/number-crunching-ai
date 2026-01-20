@@ -87,7 +87,7 @@ export default function Download({ userID, file_ext }: { userID: string, file_ex
         if (jobStatus.success && jobStatus.filename) {
             downloadFile(jobStatus.filename)
         } else {
-            setJobError(jobStatus.error || 'Export failed')
+            setJobError(jobStatus.message || 'Export failed')
             setIsExporting(false)
             setJobID(null)
         }

@@ -21,37 +21,39 @@ FASTTEXT_EPOCH = 5
 def create_coa(
     coa_group_name: str,
     s3_object_key: str,
-    user_id: int
+    user_id: int,
+    job_id: str,
 ):
     """
     Creates chart of accounts (coa) from S3 object
     """
     s3_client = boto3.Session().client("s3")
+    redis_client = get_redis_connection()
 
-    #channel_data = {"job_id": ,"job_type": "coa_create"}
+    channel_data = {"job_id": job_id,"job_type": "coa_create"}
     
     try:
         s3_object = s3_client.get_object(Bucket=os.getenv("BUCKET_NAME"), Key=s3_object_key)
         lf = pl.scan_csv(s3_object["Body"], with_column_names=lambda cols: [col.lower() for col in cols])
     except Exception as e:
         logger.exception(f"Error during create_coa() when trying to create polars lazyframe: {e}")
-        # app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Server error")
+        app.helpers.publish_status(redis_client, user_id, channel_data, False, message=f"Failed to create {coa_group_name}. Please try again.")
     else:
         with Session() as session:
             lf_columns = set(lf.collect_schema().names())
             missing_columns = {"account"} - lf_columns
             if missing_columns:
-                #app.helpers.publish_status(redis_client, user_id, channel_data, False, error=f"Missing required columns: {', '.join(missing_columns)}")
+                app.helpers.publish_status(redis_client, user_id, channel_data, False, message=f"Missing required columns: {', '.join(missing_columns)}")
                 return
 
             data = lf.select(pl.col("account").str.to_lowercase()).collect()
 
             if data.is_empty():
-                #app.helpers.publish_status(redis_client, user_id, channel_data, False, error=COA file is empty")
+                app.helpers.publish_status(redis_client, user_id, channel_data, False, message="COA file is empty")
                 return
             
             app.helpers.create_coa(session, user_id, coa_group_name, data["account"])
-            #app.helpers.publish_status(redis_client, user_id, channel_data, True,)
+            app.helpers.publish_status(redis_client, user_id, channel_data, True, message=f"Sucessfully created '{coa_group_name}' COA")
 
             session.commit()
     finally:
@@ -60,7 +62,8 @@ def create_coa(
 def create_template(
     template_info: app_models.TemplateInfo,
     user_id: str,
-    s3_object_key: str
+    s3_object_key: str,
+    job_id: str,
 ):
     """
     Create a new accounting template:
@@ -71,8 +74,9 @@ def create_template(
     5. Upload trained model to S3.
     """
     s3_client = boto3.Session().client("s3")
+    redis_client = get_redis_connection()
 
-    # channel_data = {"job_id": , "job_type": "template_creation"}
+    channel_data = {"job_id": job_id, "job_type": "template_creation"}
     
     # Step 1: Parse uploaded transaction CSV
     try:
@@ -85,7 +89,7 @@ def create_template(
         )
     except Exception as e:
         logger.exception(f"Error during create_template() when trying to create polars lazyframe: {e}")
-        # app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Server error")
+        app.helpers.publish_status(redis_client, user_id, channel_data, False, message=f"Failed to create '{template_info.title}'. Please try again.")
         return
     finally:
         app.helpers.delete_s3_object(s3_client, s3_object_key)
@@ -96,14 +100,14 @@ def create_template(
     lf_columns = set(lf.collect_schema().names())
     missing_columns = {"description", "account", "amount"} - lf_columns
     if missing_columns:
-        #app.helpers.publish_status(redis_client, user_id, channel_data, False, error=f"Missing required columns: {', '.join(missing_columns)}")
+        app.helpers.publish_status(redis_client, user_id, channel_data, False, message=f"Missing required columns: {', '.join(missing_columns)}")
         return
 
     # Collect data
     data = lf.select(["description", "account", "amount"]).collect()
     
     if data.is_empty():
-        # app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Transactions file is empty")
+        app.helpers.publish_status(redis_client, user_id, channel_data, False, message="Transactions file is empty")
         return
 
     data = app.helpers.normalize_text(data)
@@ -138,7 +142,7 @@ def create_template(
         s3_client.upload_file(model_file_path, os.getenv("BUCKET_NAME"), model_name)
     except Exception as e:
         logger.exception(f"Model creation failed (function: create_template): {e}")
-        # app.helpers.publish_status(redis_client, user_id, channel_data, False, error="Server error")
+        app.helpers.publish_status(redis_client, user_id, channel_data, False, message="Server error")
     finally:
         app.helpers.cleanup_tempfiles([training_file_path, model_file_path])
     
@@ -159,6 +163,8 @@ def create_template(
         transactions = [db_models.Transaction(description=row['description'], account=row["account"], amount=row['amount'], template_id=new_template.id) for row in data.iter_rows(named=True)]
         session.add_all(transactions)
         session.commit()
+
+    app.helpers.publish_status(redis_client, user_id, channel_data, True, message=f"Successfully created '{template_info.title}' template")
 
 def process_transactions_task(
     user_id: int,
